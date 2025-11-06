@@ -1,5 +1,6 @@
 from .triton.compiler.compiler import *
 from .triton.compiler.errors import *
+from .triton.compiler.code_generator import *
 
 __all__  = [
     # compiler.compiler
