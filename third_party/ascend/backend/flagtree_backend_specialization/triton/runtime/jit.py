@@ -57,6 +57,8 @@ def maps_line_numbers_to_comment_hints(jit_fn):
 
                 # print(f"[FLAGTREE] Parsed hint at line {line_num}: {flagtree_hints}")
 
+    return line_flagtree_hints
+
 def attach_line_number_to_comment_mapping(tree, line_flagtree_hints):
     # Attach the line number to comment mapping to the function definition node
     tree.body[0].line_flagtree_hints = line_flagtree_hints

@@ -67,7 +67,8 @@ def flagtree_backend_specialization(function_name: str, *args, **kwargs):
         if hasattr(flagtree_backend_specialization, function_name):
             func = getattr(flagtree_backend_specialization, function_name)
             return func(*args, **kwargs)
-    return None
+        raise RuntimeError(f"{function_name} not found in flagtree_backend_specialization")
+    raise RuntimeError(f"flagtree_backend_specialization not found in {driver.active}")
 
 
 # flagtree backend func specialization
@@ -77,7 +78,8 @@ def flagtree_backend_func_specialization(function_name: str):
         if hasattr(flagtree_backend_specialization, function_name):
             func = getattr(flagtree_backend_specialization, function_name)
             return func
-    return None
+        raise RuntimeError(f"{function_name} not found in flagtree_backend_specialization")
+    raise RuntimeError(f"flagtree_backend_specialization not found in {driver.active}")
 
 # flagtree backend class specialization
 def flagtree_backend_class_specialization(class_name: str):
@@ -86,4 +88,5 @@ def flagtree_backend_class_specialization(class_name: str):
         if hasattr(flagtree_backend_specialization, class_name):
             cls = getattr(flagtree_backend_specialization, class_name)
             return cls
-    return None
+        raise RuntimeError(f"{class_name} not found in flagtree_backend_specialization")
+    raise RuntimeError(f"flagtree_backend_specialization not found in {driver.active}")

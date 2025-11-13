@@ -43,7 +43,7 @@ def set_bind_sub_block_when_parallel(IteratorClass, iterator, bind_sub_block):
 
 def check_override_bind_sub_block(code_generator, node, bind_sub_block):
     # flagtree: After normal processing, check if we need to override bind_sub_block
-    if hasattr(node, 'lineno') and hasattr(self, 'jit_fn'):
+    if hasattr(node, 'lineno') and hasattr(code_generator, 'jit_fn'):
         line_num = node.lineno
         # TODO: reparse needed in case we need to deal with complex cases, will be redesigned later
         function_def = code_generator.jit_fn.parse()

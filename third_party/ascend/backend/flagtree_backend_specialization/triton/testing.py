@@ -188,7 +188,7 @@ def patch_triton_language():
         minus,
         dot_scaled,
     )
-    from . import language
+    from triton import language
 
     language.cast = cast
     language.dot = dot

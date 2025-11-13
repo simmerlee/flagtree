@@ -4,6 +4,7 @@ from .triton.compiler.code_generator import *
 from .triton.runtime.jit import *
 from .triton.runtime.autotuner import *
 from .triton.language._utils import *
+from .triton.testing import *
 
 __all__  = [
     # compiler.compiler
@@ -46,7 +47,7 @@ __all__  = [
     'get_language_utils_IterableType_ObjPath',
     'get_triton_max_tensor_numel',
     'is_block_shape_check_power_of_two',
-    'get_language_utils_BITWIDTH_DICT'
+    'get_language_utils_BITWIDTH_DICT',
     # testing
     'is_do_bench_npu',
     'ext_do_bench_npu',
