@@ -1,16 +1,10 @@
-from typing import TYPE_CHECKING, Any, Union, Dict
+from __future__ import annotations
 
-def get_language_utils_IterableType_ObjPath():
+from typing import TYPE_CHECKING, Any, Union, Dict
+if TYPE_CHECKING:
     from triton.language import core
     IterableType = Union[list[Any], tuple[Any, ...], core.tuple, core.tuple_type]
     ObjPath = tuple[int, ...]
-    return IterableType, ObjPath
-
-
-TRITON_MAX_TENSOR_NUMEL = 1048576
-
-def get_triton_max_tensor_numel():
-    return TRITON_MAX_TENSOR_NUMEL
 
 
 def is_block_shape_check_power_of_two():
@@ -29,10 +23,6 @@ BITWIDTH_DICT: Dict[str, int] = {
     "bf16": 16,
     "void": 0,
 }
-
-
-def get_language_utils_BITWIDTH_DICT():
-    return BITWIDTH_DICT
 
 
 def get_primitive_bitwidth(dtype: str) -> int:

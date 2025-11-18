@@ -44,10 +44,8 @@ __all__  = [
     'ext_Config_to_str',
     'new_AutoTilingTuner',
     # language._utils
-    'get_language_utils_IterableType_ObjPath',
-    'get_triton_max_tensor_numel',
     'is_block_shape_check_power_of_two',
-    'get_language_utils_BITWIDTH_DICT',
+    'get_primitive_bitwidth',
     # testing
     'is_do_bench_npu',
     'ext_do_bench_npu',
