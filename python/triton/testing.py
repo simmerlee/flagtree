@@ -571,27 +571,6 @@ from .language.math_ext import (
     _check_dtype,
     fma,
 )
-from .language.semantic_ext import (
-    arange,
-    floordiv,
-    atom_red_typechecking_impl,
-    atomic_cas,
-    atomic_max,
-    atomic_min,
-    _load_legacy,
-    maximum,
-    minimum,
-    mod,
-    invert,
-    logical_and,
-    logical_or,
-    not_,
-    and_,
-    or_,
-    xor_,
-    minus,
-    dot_scaled,
-)
 from . import language
 
 language.cast = cast
@@ -624,26 +603,6 @@ language.tensor_descriptor = tensor_descriptor
 language.tensor_descriptor_type = tensor_descriptor_type
 language.load_tensor_descriptor = load_tensor_descriptor
 language.store_tensor_descriptor = store_tensor_descriptor
-
-language.semantic.arange = arange
-language.semantic.floordiv = floordiv
-language.semantic.atom_red_typechecking_impl = atom_red_typechecking_impl
-language.semantic.atomic_cas = atomic_cas
-language.semantic.atomic_max = atomic_max
-language.semantic.atomic_min = atomic_min
-language.semantic._load_legacy = _load_legacy
-language.semantic.maximum = maximum
-language.semantic.minimum = minimum
-language.semantic.invert = invert
-language.semantic.logical_and = logical_and
-language.semantic.logical_or = logical_or
-language.semantic.mod = mod
-language.semantic.not_ = not_
-language.semantic.and_ = and_
-language.semantic.or_ = or_
-language.semantic.xor_ = xor_
-language.semantic.minus = minus
-language.semantic.dot_scaled = dot_scaled
 
 language.umulhi = umulhi
 language.exp = exp

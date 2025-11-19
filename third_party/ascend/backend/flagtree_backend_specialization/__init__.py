@@ -4,6 +4,7 @@ from .triton.compiler.code_generator import *
 from .triton.runtime.jit import *
 from .triton.runtime.autotuner import *
 from .triton.language._utils import *
+from .triton.language.semantic import *
 from .triton.testing import *
 
 __all__  = [
@@ -46,6 +47,48 @@ __all__  = [
     # language._utils
     'is_block_shape_check_power_of_two',
     'get_primitive_bitwidth',
+    # language.semantic
+    "is_arange_check_power_of_two",
+    "check_arange_less_than_max_numel",
+    "is_cast_src_dst_scalar_type_equal",
+    "check_unsupported_fp8_fp64",
+    "ext_dot_lhs_supported_type",
+    "ext_dot_rhs_supported_type",
+    "dot_check_hf32_input_precision",
+    "is_dot_check_max_num_imprecise_acc",
+    "reset_dot_max_num_imprecise_acc",
+    "check_was_bool_to_int8_dtype",
+    "check_was_bool_to_int8_dtype_and_cast",
+    "check_unexpected_dtype_float",
+    "check_unexpected_dtype_bool",
+    "set_load_legacy_other_input",
+    "cast_back_when_load_legacy_ptr_is_bool",
+    "set_attr_was_bool_to_int8",
+    "is_atomic_need_original_check",
+    "ext_atomic_element_typechecking",
+    "is_atomic_cas_need_element_bitwidth_check",
+    "ext_atomic_cas_element_typechecking",
+    "is_atomic_max_no_bitcast",
+    "is_atomic_min_no_bitcast",
+    "atomic_max_returning_tensor",
+    "atomic_min_returning_tensor",
+    "is_float_format_support_bf16",
+    "is_float_format_support_fp16",
+    "ext_dot_scaled_validate_lhs_dtype",
+    "ext_dot_scaled_validate_rhs_dtype",
+    "ext_dot_scaled_check_same_dtype",
+    "is_dot_scaled_need_original_check",
+    "ext_dot_scaled_check_lhs_rhs_format",
+    "dot_scaled_recheck_rhs_scale_is_none",
+    "dot_scaled_check_lhs_scale_is_none",
+    "is_dot_scaled_support_rhs_scale",
+    "check_dot_scaled_lhs_scale_dtype",
+    "check_dot_scaled_rhs_scale_dtype",
+    "dot_scaled_lhs_bitcast_to_fp_type",
+    "dot_scaled_rhs_bitcast_to_fp_type",
+    "check_dot_scaled_dimension",
+    "check_dot_scaled_pack_size",
+    "set_dot_scaled_lhs_scale_handle"
     # testing
     'is_do_bench_npu',
     'ext_do_bench_npu',
