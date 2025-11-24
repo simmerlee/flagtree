@@ -104,3 +104,15 @@ jobs:
           if [ -d "python/test/operators" ]; then
             python3.11 -m pytest -s python/test/operators
           fi
+
+      - name: FlagTree Test with FlagGems
+        shell: bash
+        run: |
+          cd ..
+          python3.11 -m pytest -s python/test/unit
+          python3.11 -m pytest -s python/test/operators
+          git clone https://github.com/flagos-ai/FlagGems.git
+          cd FlagGems
+          git checkout addflagtreetest
+          python3.11 -m pytest
+          python3 -m pytest   -s --mode=quick --limit-cases=1
