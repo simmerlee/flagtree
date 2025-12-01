@@ -40,6 +40,7 @@ except ImportError:
     class editable_wheel:
         pass
 
+
 sys.path.insert(0, os.path.dirname(__file__))
 from setup_tools import setup_helper as helper
 
@@ -613,7 +614,7 @@ if helper.flagtree_backend:
 else:
     print(helper.default_backends)
     backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
-    
+
 #backends = [*BackendInstaller.copy(["nvidia", "amd"]), *BackendInstaller.copy_externals()]
 
 
@@ -696,14 +697,16 @@ def add_link_to_backends(external_only):
                 install_dir = os.path.join(extra_dir, x)
                 update_symlink(install_dir, src_dir)
 
+
 package_data_tools = ["compile.h", "compile.c"]
 if helper.flagtree_backend == "xpu":
     package_data_tools += ["compile_xpu.h", "compile_xpu.c"]
-  #  package_data = {
- #       "triton/tools/extra": sum((b.tools_package_data for b in backends), []),
-      #  **{f"triton/backends/{b.name}": b.package_data
-      #  for b in backends}, "triton/language/extra": sum((b.language_package_data for b in backends), [])
-   # }
+#  package_data = {
+#       "triton/tools/extra": sum((b.tools_package_data for b in backends), []),
+#  **{f"triton/backends/{b.name}": b.package_data
+#  for b in backends}, "triton/language/extra": sum((b.language_package_data for b in backends), [])
+# }
+
 
 def add_link_to_proton():
     proton_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "third_party", "proton", "proton"))
