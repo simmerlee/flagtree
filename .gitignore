@@ -2,29 +2,44 @@
 build/
 build-*/
 
+llvm-project/
+llvm-project-*/
+.llvm-project/
+
 # Triton Python module builds
 python/build/
 python/dist/
 python/triton*.egg-info/
-python/_deps/
+python/triton_kernels/triton*.egg-info/
 
 python/triton/_C/*.pyd
 python/triton/_C/*.so
 python/triton/_C/*.dylib
+python/triton/_C/*.pdb
+python/triton/_C/*.exe
+python/triton/_C/*.ilk
+python/triton/FileCheck
 
 # Backends copied from submodules
-python/triton/backends/
+python/triton/backends/*
 !python/triton/backends/__init__.py
 !python/triton/backends/compiler.py
 !python/triton/backends/driver.py
 
-# flagtree backend
-third_party/iluvatar/iluvatarTritonPlugin.so
-third_party/triton_shared/
-third_party/xpu/backend/xpu3
+# Language extras
+python/triton/language/extra
+
+# Tools extras
+python/triton/tools/extra
 
 # Proton
 python/triton/profiler
+
+# Pytest
+pytest.ini
+
+# Instrumentation
+python/triton/instrumentation
 
 # Python caches
 __pycache__/
@@ -51,6 +66,8 @@ ptxas
 
 # Third-party include
 third_party/nvidia/backend/include
+third_party/nvidia/backend/lib/cupti
+third_party/sunrise/backend/lib
 
 # Docs
 docs/_build/
@@ -70,3 +87,6 @@ docs/sg_execution_times.rst
 
 # Vim
 *.swp
+
+# macOS
+.DS_Store

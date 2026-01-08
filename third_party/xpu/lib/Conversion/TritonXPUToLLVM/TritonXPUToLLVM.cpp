@@ -1,3 +1,8 @@
+//===----------------------------------------------------------------------===//
+//
+// Copyright (C) 2025 by Kunlunxin. All rights reserved.
+//
+//===----------------------------------------------------------------------===//
 #include "triton/Conversion/TritonXPUToLLVM/Passes.h"
 // clang-format off
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
@@ -52,9 +57,8 @@ struct ConvertTritonXPUToLLVM
     : public triton::impl::ConvertTritonXPUToLLVMBase<ConvertTritonXPUToLLVM> {
   using ConvertTritonXPUToLLVMBase::ConvertTritonXPUToLLVMBase;
 
-  ConvertTritonXPUToLLVM(uint32_t xpu_arch, uint32_t buffer_size,
-                         bool isUseMaskZero)
-      : ConvertTritonXPUToLLVMBase({xpu_arch, buffer_size, isUseMaskZero}) {}
+  ConvertTritonXPUToLLVM(uint32_t xpu_arch, uint32_t buffer_size)
+      : ConvertTritonXPUToLLVMBase({xpu_arch, buffer_size}) {}
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
@@ -99,7 +103,7 @@ struct ConvertTritonXPUToLLVM
     OpBuilder::InsertPoint indexInsertPoint;
 
     RewritePatternSet patterns(context);
-    triton::xpu::TargetInfo targetInfo(xpu_arch, buffer_size, isUseMaskZero);
+    triton::xpu::TargetInfo targetInfo(xpu_arch, buffer_size);
     int benefit = patternBenefitPrioritizeOverLLVMConversions;
     // Make benefit for XPU specific patterns higher so they apply before common
     // patterns
@@ -133,16 +137,13 @@ struct ConvertTritonXPUToLLVM
 
     mlir::triton::xpu::populateReduceOpToLLVMPatterns(typeConverter, patterns,
                                                       targetInfo, benefit);
-
-    mlir::triton::xpu::populateScanOpToLLVMPatterns(typeConverter, patterns,
-                                                    targetInfo, benefit);
+    // mlir::triton::populateScanOpToLLVMPatterns(typeConverter, patterns,
+    //                                            targetInfo, benefit);
 
     // mlir::triton::populateHistogramOpToLLVMPatterns(typeConverter, patterns,
     //                                                 targetInfo, benefit);
-    mlir::triton::populatePrintOpToLLVMPattern(typeConverter, patterns,
-                                               targetInfo, benefit);
-    mlir::triton::xpu::populateXPUPrintOpToLLVMPattern(typeConverter, patterns,
-                                                       targetInfo, benefit);
+    // mlir::triton::populatePrintOpToLLVMPattern(typeConverter, patterns,
+    //                                            targetInfo, benefit);
     mlir::triton::populateControlFlowOpToLLVMPattern(typeConverter, patterns,
                                                      benefit);
     mlir::triton::xpu::populateSPMDOpToLLVMPattern(typeConverter, patterns,
@@ -154,8 +155,8 @@ struct ConvertTritonXPUToLLVM
                                                     xpuBenefit);
     mlir::triton::populateViewOpToLLVMPatterns(typeConverter, patterns,
                                                benefit);
-    mlir::triton::populateAssertOpToLLVMPattern(typeConverter, patterns,
-                                                targetInfo, benefit);
+    // mlir::triton::populateAssertOpToLLVMPattern(typeConverter, patterns,
+    //                                             targetInfo, benefit);
     // mlir::triton::populateMemoryOpToLLVMPattern(typeConverter, targetInfo,
     //                                             patterns, benefit);
     mlir::triton::xpu::populateMakeRangeOpToLLVMPattern(
@@ -220,10 +221,8 @@ std::unique_ptr<OperationPass<ModuleOp>> createConvertTritonXPUToLLVMPass() {
 }
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonXPUToLLVMPass(uint32_t xpu_arch, uint32_t buffer_size,
-                                 bool isUseMaskZero) {
-  return std::make_unique<ConvertTritonXPUToLLVM>(xpu_arch, buffer_size,
-                                                  isUseMaskZero);
+createConvertTritonXPUToLLVMPass(uint32_t xpu_arch, uint32_t buffer_size) {
+  return std::make_unique<ConvertTritonXPUToLLVM>(xpu_arch, buffer_size);
 }
 
 } // namespace triton

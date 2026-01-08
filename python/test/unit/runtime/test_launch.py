@@ -37,13 +37,13 @@ def test_metadata() -> None:
         pass
 
     # launch kernel
-    triton.compiler.CompiledKernel.launch_enter_hook = hook
+    triton.knobs.runtime.launch_enter_hook = hook
     kernel[(1, 3, 2)](6)
-    triton.compiler.CompiledKernel.launch_enter_hook = None
+    triton.knobs.runtime.launch_enter_hook = None
     assert used_hook
 
 
-def test_memory_leak() -> None:
+def test_memory_leak(device) -> None:
 
     @triton.jit
     def kernel(in_ptr0, out_ptr0, xnumel, XBLOCK: tl.constexpr):
@@ -57,8 +57,8 @@ def test_memory_leak() -> None:
 
     tracemalloc.start()
     try:
-        inp = torch.randn(10, device='cuda')
-        out = torch.randn(10, device='cuda')
+        inp = torch.randn(10, device=device)
+        out = torch.randn(10, device=device)
         kernel[(10, )](inp, out, 10, XBLOCK=16)
         gc.collect()
         begin, _ = tracemalloc.get_traced_memory()

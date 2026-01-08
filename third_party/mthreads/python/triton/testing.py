@@ -5,7 +5,6 @@ import sys
 from contextlib import contextmanager
 from typing import Any, Dict, List
 from . import language as tl
-from . import runtime
 
 
 def nvsmi(attrs):
@@ -81,7 +80,7 @@ def do_bench_cudagraph(fn, rep=20, grad_to_none=None, return_mode="mean"):
 
 
 def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, fast_flush=True, return_mode="mean",
-             device_type="None"):
+             device_type="cuda"):
     """
     Benchmark the runtime of the provided function. By default, return the median runtime of :code:`fn` along with
     the 20-th and 80-th performance percentile.
@@ -101,9 +100,6 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, fast_flu
     """
     assert return_mode in ["min", "max", "mean", "median"]
     import torch
-
-    if device_type is None:
-        device_type = runtime.driver.active.get_current_target().backend
 
     di = torch._dynamo.device_interface.get_interface_for_device(device_type)
 

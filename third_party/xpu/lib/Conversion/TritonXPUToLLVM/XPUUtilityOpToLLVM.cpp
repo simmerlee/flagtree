@@ -1,3 +1,8 @@
+//===----------------------------------------------------------------------===//
+//
+// Copyright (C) 2025 by Kunlunxin. All rights reserved.
+//
+//===----------------------------------------------------------------------===//
 #include "xpu/lib/Conversion/TritonXPUToLLVM/PatternTritonXPUOpToLLVM.h"
 
 namespace {
@@ -31,8 +36,9 @@ struct XPUExtractOpConversion
     // Get the LLVM values
     auto llTensors = unpackLLElements(loc, llTensor, rewriter);
 
-    assert(index >= 0 && index < llTensors.size() &&
-           "Get Invalid Index For triton::xpu::ExtractOp");
+    // TODO[dyq]: necessary?
+    // assert(index >= 0 && index < llTensors.size() &&
+    //        "Get Invalid Index For triton::xpu::ExtractOp");
 
     // Modifition Logic
     rewriter.replaceOp(op, {llTensors[index]});
@@ -59,32 +65,13 @@ struct XPUExtractSliceOpConversion
     auto llTensor = adaptor.getTensor();
     auto llTensors = unpackLLElements(loc, llTensor, rewriter);
 
-    auto srcType = op.getTensor().getType();
-    auto srcRankedTy = cast<RankedTensorType>(srcType);
     auto resType = op.getResult().getType();
-    auto rankedTy = cast<RankedTensorType>(resType);
+    auto rankedTy = mlir::dyn_cast<RankedTensorType>(resType);
     unsigned elems = getTotalElemsPerThread(resType);
-    auto srcShape = srcRankedTy.getShape();
     SmallVector<Value> retVals(elems);
     for (unsigned i = 0; i < elems; ++i) {
       retVals[i] = llTensors[i];
     }
-
-    // 1 core deal with multi row
-    if (srcShape.size() == 2) {
-      auto clusterEncoding =
-          cast<triton::xpu::ClusterLayoutAttr>(rankedTy.getEncoding());
-      auto sizePerCore = clusterEncoding.getSizePerCore();
-      assert(elems == product(sizePerCore) && "elems != product(sizePerCore)");
-      if (sizePerCore[0] > 1) {
-        assert(sizePerCore[1] == 1 && "Only sizePerCore[1]==1 Could be Extract "
-                                      "Sliced When sizePerCore[0] > 1");
-        for (unsigned i = 0; i < elems; ++i) {
-          retVals[i] = llTensors[i * srcShape[1]];
-        }
-      }
-    }
-
     Type llvmResultStructTy = getTypeConverter()->convertType(resType);
     Value resultStruct = packLLElements(loc, getTypeConverter(), retVals,
                                         rewriter, llvmResultStructTy);

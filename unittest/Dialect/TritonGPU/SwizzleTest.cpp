@@ -1,8 +1,11 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "llvm/Support/Signals.h"
 #include <gtest/gtest.h>
 
 using namespace mlir;
-using mlir::triton::gpu::SharedEncodingAttr;
+using mlir::triton::gpu::SwizzledSharedEncodingAttr;
+
+namespace {
 
 struct swizzleParams {
   int vec;
@@ -39,8 +42,8 @@ TEST_P(SwizzleDotOperandTestFixture, DotOperands) {
 
   // create element type
   Type eltType = IntegerType::get(&ctx, params.typeWidth);
-  auto layout = SharedEncodingAttr::get(&ctx, encoding, params.shape, {1, 0},
-                                        CTALayout, eltType);
+  auto layout = SwizzledSharedEncodingAttr::get(&ctx, encoding, params.shape,
+                                                {1, 0}, CTALayout, eltType);
 
   ASSERT_EQ(layout.getVec(), params.refSwizzle.vec);
   ASSERT_EQ(layout.getPerPhase(), params.refSwizzle.perPhase);
@@ -56,3 +59,11 @@ INSTANTIATE_TEST_SUITE_P(TestDotOperands, SwizzleDotOperandTestFixture,
                                            ParamT{{32, 32}, 1, 16, {8, 2, 4}},
                                            ParamT{{16, 16}, 0, 16, {8, 4, 2}},
                                            ParamT{{16, 16}, 1, 16, {8, 4, 2}}));
+
+} // anonymous namespace
+
+int main(int argc, char *argv[]) {
+  llvm::sys::PrintStackTraceOnErrorSignal(argv[0]);
+  testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
+}

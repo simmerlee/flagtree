@@ -15,13 +15,14 @@ add_triton_library(TritonAnalysis
 
   DEPENDS
   TritonTableGen
+  TritonGPUTableGen
   TritonGPUAttrDefsIncGen
+  TritonGPUTypeInterfacesIncGen
 
   LINK_LIBS PUBLIC
   MLIRAnalysis
   MLIRLLVMDialect
   TritonIR
   TritonGPUIR
-  ${NVGPUIR}
-  ${_EXTRA_LINK_LIBS}
+  TritonNvidiaGPUIR
 )

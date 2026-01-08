@@ -132,12 +132,12 @@ static PyObject *getDeviceProperties(PyObject *self, PyObject *args) {
 
   // create a struct to hold device properties
   return Py_BuildValue(
-      "{s:i, s:i, s:i, s:i, s:i, s:i, s:s, s:i}", "max_shared_mem",
+      "{s:i, s:i, s:i, s:i, s:i, s:i, s:s, s:i, s:i}", "max_shared_mem",
       props.sharedMemPerBlock, "max_num_regs", props.regsPerBlock,
       "multiprocessor_count", props.multiProcessorCount, "sm_clock_rate",
       props.clockRate, "mem_clock_rate", props.memoryClockRate, "mem_bus_width",
       props.memoryBusWidth, "arch", props.gcnArchName, "warpSize",
-      props.warpSize);
+      props.warpSize, "max_threads_per_sm", props.maxThreadsPerMultiProcessor);
 }
 
 static PyObject *loadBinary(PyObject *self, PyObject *args) {
@@ -172,15 +172,18 @@ static PyObject *loadBinary(PyObject *self, PyObject *args) {
   // get allocated registers and spilled registers from the function
   int n_regs = 0;
   int n_spills = 0;
+  int32_t n_max_threads = 0;
   hipSymbolTable.hipFuncGetAttribute(&n_regs, HIP_FUNC_ATTRIBUTE_NUM_REGS, fun);
   hipSymbolTable.hipFuncGetAttribute(&n_spills,
                                      HIP_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES, fun);
+  hipSymbolTable.hipFuncGetAttribute(
+      &n_max_threads, HIP_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK, fun);
   n_spills /= 4;
   if (PyErr_Occurred()) {
     return NULL;
   }
-  return Py_BuildValue("(KKii)", (uint64_t)mod, (uint64_t)fun, n_regs,
-                       n_spills);
+  return Py_BuildValue("(KKiii)", (uint64_t)mod, (uint64_t)fun, n_regs,
+                       n_spills, n_max_threads);
 }
 
 static PyMethodDef ModuleMethods[] = {

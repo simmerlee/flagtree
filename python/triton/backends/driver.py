@@ -1,15 +1,34 @@
-from abc import ABCMeta, abstractmethod, abstractclassmethod
+from abc import ABCMeta, abstractmethod
+from typing import Callable, List, Protocol, Sequence
+
+
+class Benchmarker(Protocol):
+
+    def __call__(self, kernel_call: Callable, *, quantiles: List[float], **kwargs) -> Sequence[float]:
+        pass
 
 
 class DriverBase(metaclass=ABCMeta):
 
-    @abstractclassmethod
+    @classmethod
+    @abstractmethod
     def is_active(self):
         pass
 
     @abstractmethod
     def get_current_target(self):
         pass
+
+    @abstractmethod
+    def get_active_torch_device(self):
+        pass
+
+    @abstractmethod
+    def get_benchmarker(self) -> Benchmarker:
+        """
+        Return the benchmarking function that this backend should use by default.
+        """
+        raise NotImplementedError
 
     def __init__(self) -> None:
         pass
@@ -20,9 +39,7 @@ class GPUDriver(DriverBase):
     def __init__(self):
         # TODO: support other frameworks than torch
         import torch
-        if hasattr(torch, "cuda"):
-            if hasattr(torch.cuda, "get_device_capability"):
-                self.get_device_capability = torch.cuda.get_device_capability
+        self.get_device_capability = torch.cuda.get_device_capability
         try:
             from torch._C import _cuda_getCurrentRawStream
             self.get_current_stream = _cuda_getCurrentRawStream

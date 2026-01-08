@@ -183,27 +183,6 @@ void init_triton_ir(py::module &&m) {
       .value("EVICT_LAST", EvictionPolicy::EVICT_LAST)
       .export_values();
 
-  /************************************ TritonXPU
-   * *******************************************/
-  py::enum_<OffsetStatePolicy>(m, "OFFSET_STATE_POLICY", py::module_local())
-      .value("EMPTY", OffsetStatePolicy::EMPTY)
-      .value("UNKNOWN", OffsetStatePolicy::UNKNOWN)
-      .value("DISCRETE_SAME", OffsetStatePolicy::DISCRETE_SAME)
-      .value("CONTINUOUS", OffsetStatePolicy::CONTINUOUS)
-      .value("DISCRETE", OffsetStatePolicy::DISCRETE)
-      .value("LOCALLY_CONTINUOUS", OffsetStatePolicy::LOCALLY_CONTINUOUS)
-      .export_values();
-
-  /************************************ TritonXPU
-   * *******************************************/
-  py::enum_<MemorySyncMode>(m, "MEMORY_SYNC_MODE", py::module_local())
-      .value("SYNC", MemorySyncMode::SYNC)
-      .value("ASYNC", MemorySyncMode::ASYNC)
-      .export_values();
-
-  /************************************ TritonXPU
-   * *******************************************/
-
   py::enum_<RMWOp>(m, "ATOMIC_OP", py::module_local())
       .value("ADD", RMWOp::ADD)
       .value("FADD", RMWOp::FADD)
@@ -214,9 +193,7 @@ void init_triton_ir(py::module &&m) {
       .value("MAX", RMWOp::MAX)
       .value("MIN", RMWOp::MIN)
       .value("UMIN", RMWOp::UMIN)
-      .value("UMAX", RMWOp::UMAX)
-      .value("MUL", RMWOp::MUL)
-      .value("FMUL", RMWOp::FMUL);
+      .value("UMAX", RMWOp::UMAX);
 
   py::enum_<RoundingMode>(m, "ROUNDING_MODE", py::module_local())
       .value("RTZ", RoundingMode::RTZ)
@@ -751,8 +728,10 @@ void init_triton_ir(py::module &&m) {
              return self.getBuilder().getI64Type();
            })
       .def("get_fp8e4nv_ty",
+           // TODO: fp8e4nv is using Float8E4M3FNUZType, which
+           // does not seem right. It should use FloatE4M3FNType
            [](TritonOpBuilder &self) -> Type {
-             return self.getBuilder().getType<Float8E4M3FNType>();
+             return self.getBuilder().getType<Float8E4M3FNUZType>();
            })
       .def("get_fp8e4b8_ty",
            [](TritonOpBuilder &self) -> Type {
@@ -1230,58 +1209,47 @@ void init_triton_ir(py::module &&m) {
       // Input/Output
       .def("create_load",
            [](TritonOpBuilder &self, Value &ptrs, CacheModifier cacheModifier,
-              EvictionPolicy evictionPolicy, bool isVolatile,
-              OffsetStatePolicy offsetStatePolicy,
-              MemorySyncMode syncMode) -> Value {
+              EvictionPolicy evictionPolicy, bool isVolatile) -> Value {
              return self.create<LoadOp>(ptrs, cacheModifier, evictionPolicy,
-                                        isVolatile, offsetStatePolicy,
-                                        syncMode);
+                                        isVolatile);
            })
       .def("create_store",
            [](TritonOpBuilder &self, Value &ptrs, Value &value,
-              CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
-              OffsetStatePolicy offsetStatePolicy,
-              MemorySyncMode syncMode) -> void {
-             self.create<StoreOp>(ptrs, value, cacheModifier, evictionPolicy,
-                                  offsetStatePolicy, syncMode);
+              CacheModifier cacheModifier,
+              EvictionPolicy evictionPolicy) -> void {
+             self.create<StoreOp>(ptrs, value, cacheModifier, evictionPolicy);
            })
       .def("create_tensor_pointer_load",
            [](TritonOpBuilder &self, Value &ptr,
               std::vector<int32_t> &boundaryCheck,
               std::optional<PaddingOption> paddingOption,
               CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
-              bool isVolatile, OffsetStatePolicy offsetStatePolicy,
-              MemorySyncMode syncMode) -> Value {
-             return self.create<LoadOp>(
-                 ptr, boundaryCheck, paddingOption, cacheModifier,
-                 evictionPolicy, isVolatile, offsetStatePolicy, syncMode);
+              bool isVolatile) -> Value {
+             return self.create<LoadOp>(ptr, boundaryCheck, paddingOption,
+                                        cacheModifier, evictionPolicy,
+                                        isVolatile);
            })
       .def("create_tensor_pointer_store",
            [](TritonOpBuilder &self, Value &ptr, Value &val,
               std::vector<int32_t> &boundaryCheck, CacheModifier cacheModifier,
-              EvictionPolicy evictionPolicy,
-              OffsetStatePolicy offsetStatePolicy,
-              MemorySyncMode syncMode) -> void {
+              EvictionPolicy evictionPolicy) -> void {
              self.create<StoreOp>(ptr, val, boundaryCheck, cacheModifier,
-                                  evictionPolicy, offsetStatePolicy, syncMode);
+                                  evictionPolicy);
            })
       .def("create_masked_load",
            [](TritonOpBuilder &self, Value &ptrs, Value &mask,
               std::optional<Value> &other, CacheModifier cacheModifier,
-              EvictionPolicy evictionPolicy, bool isVolatile,
-              OffsetStatePolicy offsetStatePolicy,
-              MemorySyncMode syncMode) -> Value {
-             return self.create<LoadOp>(
-                 ptrs, mask, other.value_or(Value()), cacheModifier,
-                 evictionPolicy, isVolatile, offsetStatePolicy, syncMode);
+              EvictionPolicy evictionPolicy, bool isVolatile) -> Value {
+             return self.create<LoadOp>(ptrs, mask, other.value_or(Value()),
+                                        cacheModifier, evictionPolicy,
+                                        isVolatile);
            })
       .def("create_masked_store",
            [](TritonOpBuilder &self, Value &ptrs, Value &val, Value &mask,
-              CacheModifier cacheModifier, EvictionPolicy evictionPolicy,
-              OffsetStatePolicy offsetStatePolicy,
-              MemorySyncMode syncMode) -> void {
+              CacheModifier cacheModifier,
+              EvictionPolicy evictionPolicy) -> void {
              self.create<StoreOp>(ptrs, val, mask, cacheModifier,
-                                  evictionPolicy, offsetStatePolicy, syncMode);
+                                  evictionPolicy);
            })
       .def("create_descriptor_load",
            [](TritonOpBuilder &self, Value &desc_ptr,
@@ -1671,7 +1639,6 @@ void init_triton_ir(py::module &&m) {
                                                     "tritonxpu-store-control",
                                                     "tritonxpu-unroll-control",
                                                     "tritonxpu-vectorize",
-                                                    "tritonsdnn-combine",
                                                 });
           }
 

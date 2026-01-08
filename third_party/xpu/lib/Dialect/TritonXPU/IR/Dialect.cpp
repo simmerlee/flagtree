@@ -177,10 +177,12 @@ SmallVector<unsigned> getUniqueContigPerCore(Attribute layout,
   return ret;
 }
 
-LogicalResult ClusterLayoutAttr::verify(
-    function_ref<InFlightDiagnostic()> emitError,
-    ArrayRef<unsigned> sizePerCore, ArrayRef<unsigned> coresPerGroup,
-    ArrayRef<unsigned> groupsPerCluster, ArrayRef<unsigned> order) {
+LogicalResult
+ClusterLayoutAttr::verify(function_ref<InFlightDiagnostic()> emitError,
+                          ArrayRef<unsigned> sizePerCore,
+                          ArrayRef<unsigned> coresPerGroup,
+                          ArrayRef<unsigned> groupsPerCluster,
+                          ArrayRef<unsigned> order, bool isReduceOpt) {
   if (sizePerCore.size() != coresPerGroup.size() ||
       coresPerGroup.size() != groupsPerCluster.size() ||
       groupsPerCluster.size() != order.size()) {
@@ -341,6 +343,7 @@ Attribute triton::xpu::ClusterLayoutAttr::parse(AsmParser &parser, Type type) {
   SmallVector<unsigned> coresPerGroup;
   SmallVector<unsigned> groupsPerCluster;
   SmallVector<unsigned> order;
+  bool isReduceOpt;
 
   for (const NamedAttribute &attr : dict) {
     if (attr.getName() == "sizePerCore") {
@@ -361,6 +364,9 @@ Attribute triton::xpu::ClusterLayoutAttr::parse(AsmParser &parser, Type type) {
     } else if (attr.getName() == "order") {
       if (parseIntArrayAttr(parser, attr, order, "order").failed())
         return {};
+    } else if (attr.getName() == "isReduceOpt") {
+      if (parseBool(parser, attr, isReduceOpt, "isReduceOpt").failed())
+        return {};
     } else {
       parser.emitError(parser.getNameLoc(), "unexpected key: ")
           << attr.getName().strref();
@@ -368,8 +374,9 @@ Attribute triton::xpu::ClusterLayoutAttr::parse(AsmParser &parser, Type type) {
     }
   }
 
-  return parser.getChecked<ClusterLayoutAttr>(
-      parser.getContext(), sizePerCore, coresPerGroup, groupsPerCluster, order);
+  return parser.getChecked<ClusterLayoutAttr>(parser.getContext(), sizePerCore,
+                                              coresPerGroup, groupsPerCluster,
+                                              order, isReduceOpt);
 }
 
 void triton::xpu::ClusterLayoutAttr::print(mlir::AsmPrinter &printer) const {
@@ -378,7 +385,7 @@ void triton::xpu::ClusterLayoutAttr::print(mlir::AsmPrinter &printer) const {
           << ", coresPerGroup = [" << ArrayRef(getCoresPerGroup()) << "]"
           << ", groupsPerCluster = [" << ArrayRef(getGroupsPerCluster()) << "]"
           << ", order = [" << getOrder() << "]"
-          << "}>";
+          << ", isReduceOpt = " << getIsReduceOpt() << "}>";
 
   printer << "}>";
 }

@@ -6,12 +6,10 @@ add_triton_library(TritonXPUToLLVM
   LoadStoreOpToLLVM.cpp
   MakeRangeOpToLLVM.cpp
   ReduceOpToLLVM.cpp
-  ScanOpToLLVM.cpp
   SPMDOpToLLVM.cpp
   TritonXPUToLLVM.cpp
   VectorizedOpToLLVM.cpp
   ViewOpToLLVM.cpp
-  XPUPrintOpToLLVM.cpp
   XPUUtilityOpToLLVM.cpp
 
   TargetInfo.cpp

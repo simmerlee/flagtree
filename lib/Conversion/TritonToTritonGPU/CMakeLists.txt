@@ -1,6 +1,7 @@
 get_flagtree_backend_lib("TritonToTritonGPU" _EXTRA_LINK_LIBS)
 
 add_triton_library(TritonToTritonGPU
+    RelayoutTritonGPU.cpp
     TritonGPUConversion.cpp
     TritonToTritonGPUPass.cpp
 
@@ -12,7 +13,6 @@ add_triton_library(TritonToTritonGPU
     MLIRPass
     MLIRTransforms
     TritonIR
+    ProtonIR
     TritonGPUIR
-    TritonGPUTransforms
-    ${_EXTRA_LINK_LIBS}
 )

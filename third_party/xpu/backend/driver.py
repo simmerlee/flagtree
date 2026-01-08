@@ -384,13 +384,9 @@ class XPULauncher(object):
 class XPUDriver(GPUDriver):
 
     def __init__(self):
-        # self.utils = XPUUtils()
+        self.utils = XPUUtils()
         self.launcher_cls = XPULauncher
         super().__init__()
-
-    @property
-    def utils(self):
-        return XPUUtils()
 
     @staticmethod
     def is_active():
@@ -400,3 +396,11 @@ class XPUDriver(GPUDriver):
         arch = int(os.environ.get('TRITON_XPU_ARCH', '3'))
         warp_size = 1  # we don't have warp
         return GPUTarget("xpu", arch, warp_size)
+
+    # TODO: implement
+    def get_active_torch_device(self):
+        return "xpu"
+
+    def get_benchmarker(self):
+        from triton.testing import do_bench
+        return do_bench

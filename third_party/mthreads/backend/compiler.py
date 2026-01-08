@@ -3,7 +3,8 @@ from triton._C.libtriton import ir, passes, llvm, mthreads
 
 from dataclasses import dataclass
 import functools
-from typing import Any, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
+from types import ModuleType
 import hashlib
 import re
 import tempfile
@@ -112,6 +113,10 @@ class MUSABackend(BaseBackend):
         }
         return codegen_fns
 
+    # TODO: implement
+    def get_module_map(self) -> Dict[str, ModuleType]:
+        return {}
+
     def load_dialects(self, ctx):
         mthreads.load_dialects(ctx)
 
@@ -205,7 +210,7 @@ class MUSABackend(BaseBackend):
             print("// -----// LLVM IR")
             print(src)
 
-        opt_option = "-mtgpu-enable-const-calc=1 -mtgpu-if-convert=1 -mtgpu-tiny-offset-hint=1 -mtgpu-alloc-shared-memory-from-zero=1"
+        opt_option = "-mtgpu-enable-const-calc=1"
         if (os.environ.get("MUSA_ENABLE_LLC_OPT", "0") == "1"):
             opt_option = "-mtgpu-opt-level=1"
 

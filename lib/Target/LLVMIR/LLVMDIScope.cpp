@@ -1,9 +1,3 @@
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
-
-#ifndef FLAGTREE_SPEC_Target_LLVMIR_LLVMDIScope_cpp
-
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Pass/Pass.h"
@@ -19,9 +13,9 @@
 // DIScopeForLLVMFuncOpPass, this pass also handles inlined functions.
 //===----------------------------------------------------------------------===//
 
-using namespace mlir;
+namespace mlir {
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_LLVMDISCOPE
 #include "triton/Target/LLVMIR/Passes.h.inc"
 
 namespace {
@@ -42,10 +36,10 @@ FileLineColLoc extractFileLoc(Location loc) {
   return mlir::FileLineColLoc::get(unknownFile, 0, 0);
 }
 
-/// Add a debug info scope to LLVMFuncOp that are missing it.
-struct LLVMDIScopePass : public LLVMDIScopeBase<LLVMDIScopePass> {
-  LLVMDIScopePass() = default;
+} // anonymous namespace
 
+/// Add a debug info scope to LLVMFuncOp that are missing it.
+struct LLVMDIScopePass : public impl::LLVMDIScopeBase<LLVMDIScopePass> {
   void setSubprogramAttr(LLVM::LLVMFuncOp funcOp) {
     Location loc = funcOp.getLoc();
     if (loc->findInstanceOf<mlir::FusedLocWith<LLVM::DISubprogramAttr>>())
@@ -109,9 +103,9 @@ struct LLVMDIScopePass : public LLVMDIScopeBase<LLVMDIScopePass> {
     // the column offset
     auto subprogramAttr = LLVM::DISubprogramAttr::get(
         context, distinctId, compileUnitAttr, fileAttr, funcNameAttr,
-        funcNameAttr, fileAttr,
-        /*line=*/line,
-        /*scopeline=*/line, subprogramFlags, subroutineTypeAttr);
+        funcNameAttr, fileAttr, /*line=*/line, /*scopeline=*/line,
+        subprogramFlags, subroutineTypeAttr, /*retainNodes=*/{},
+        /*annotations=*/{});
     funcOp->setLoc(FusedLoc::get(context, {loc}, subprogramAttr));
   }
 
@@ -160,10 +154,4 @@ struct LLVMDIScopePass : public LLVMDIScopeBase<LLVMDIScopePass> {
   }
 };
 
-} // end anonymous namespace
-
-std::unique_ptr<Pass> mlir::createLLVMDIScopePass() {
-  return std::make_unique<LLVMDIScopePass>();
-}
-
-#endif
+} // namespace mlir

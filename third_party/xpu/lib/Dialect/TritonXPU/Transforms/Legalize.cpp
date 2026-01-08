@@ -32,11 +32,9 @@ struct TritonXPULegalizePass
       TritonXPULegalizePass>::TritonXPULegalizeBase;
 
   TritonXPULegalizePass() = default;
-  TritonXPULegalizePass(unsigned bufferSize, unsigned coreNum,
-                        unsigned groupsPerCluster) {
+  TritonXPULegalizePass(unsigned bufferSize, unsigned coreNum) {
     this->bufferSize = bufferSize;
     this->coreNum = coreNum;
-    this->groupsPerCluster = groupsPerCluster;
   }
 
   mlir::Operation *findRootOp(mlir::Operation *op) {
@@ -100,6 +98,11 @@ struct TritonXPULegalizePass
       });
     }
     return;
+  }
+
+  size_t previousPowerOf2(size_t n) {
+    size_t exp = std::log2(n);
+    return std::pow(2, exp);
   }
 
   size_t getSizePerCluster(Type &type, bool unrollOpt) {
@@ -171,24 +174,27 @@ struct TritonXPULegalizePass
                                               bool isReduceMultiGroup,
                                               bool unrollOpt) {
     // bytesPerCluster = bytesPerCore * coresPerGroup * groupsPerCluster
-    LLVM_DEBUG(llvm::dbgs() << "\n");
+    // 8KB local memory per core, reserve 2KB for parameters
+    const size_t bytesPerCluster = 4 * 16 * (6 << 10);
+    size_t typesBytes = 0;
     size_t tensorDim = 1;
     for (size_t i = 0; i < types.size(); ++i) {
       Type type = types[i];
-      LLVM_DEBUG(llvm::dbgs()
-                 << "getIterationCount types[" << i << "]: " << type << "\n");
+      Type valueElemType = getElementTypeOrSelf(type);
+      size_t valueElemBytes =
+          std::max<int>(valueElemType.getIntOrFloatBitWidth(), 8) / 8u;
+      typesBytes += valueElemBytes;
       if (auto tensorType = mlir::dyn_cast<RankedTensorType>(type)) {
         tensorDim = std::max(tensorDim, tensorType.getShape().size());
       }
     }
-    LLVM_DEBUG(llvm::dbgs() << "tensorDim = " << tensorDim << " \n");
-
     llvm::SmallVector<llvm::SmallVector<size_t>> iterCounts(
         tensorDim, llvm::SmallVector<size_t>(types.size(), 1u));
-
     for (size_t i = 0; i < types.size(); ++i) {
       if (auto tensorType = mlir::dyn_cast<RankedTensorType>(types[i])) {
-        size_t spaceSize = getSizePerCluster(types[i], unrollOpt);
+        size_t spaceSize =
+            std::min(previousPowerOf2(bytesPerCluster / typesBytes),
+                     getSizePerCluster(types[i], unrollOpt));
         auto tensorShape = tensorType.getShape();
 
         if (tensorShape.size() > 2) {
@@ -204,33 +210,16 @@ struct TritonXPULegalizePass
 
         llvm::SmallVector<int64_t> slicedShape =
             getSlicedShape(tensorShape, spaceSize, isReduceMultiGroup);
-        LLVM_DEBUG(llvm::dbgs() << "\n------------------------------------\n");
-        LLVM_DEBUG(llvm::dbgs() << "type[" << i << "]: " << tensorType << "\n");
         for (size_t j = 0; j < tensorShape.size(); ++j) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "tensorShape[" << j << "]:" << tensorShape[j] << ",  ");
-          LLVM_DEBUG(llvm::dbgs()
-                     << "slicedShape[" << j << "]:" << slicedShape[j] << ",  ");
           iterCounts[j][i] =
               std::ceil(static_cast<double>(tensorShape[j]) / slicedShape[j]);
-          LLVM_DEBUG(llvm::dbgs() << "iterCounts[" << j << "][" << i
-                                  << "]: " << iterCounts[j][i] << "\n");
         }
-        LLVM_DEBUG(llvm::dbgs() << "------------------------------------\n");
       }
     }
 
     llvm::SmallVector<size_t> lcmIterCount(tensorDim, 1u);
     for (size_t j = 0; j < iterCounts.size(); ++j) {
-      LLVM_DEBUG(llvm::dbgs() << "iterCounts[" << j << "]: ");
-      for (auto item : iterCounts[j]) {
-        LLVM_DEBUG(llvm::dbgs() << item << ", ");
-      }
-      LLVM_DEBUG(llvm::dbgs() << "\n");
-
       lcmIterCount[j] = getLCM(iterCounts[j]);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "lcmIterCount[" << j << "]:" << lcmIterCount[j] << "\n");
     }
     return lcmIterCount;
   }
@@ -278,7 +267,6 @@ struct TritonXPULegalizePass
       llvm::SetVector<Operation *> innerChain;
       llvm::SetVector<Operation *> outerChain;
       for (auto op : allOpTree) {
-
         if (auto rangeOp = dyn_cast<triton::MakeRangeOp>(op)) {
           for (auto user : rangeOp.getResult().getUsers()) {
             if (auto userOp = findUserOp<triton::ExpandDimsOp>(user)) {
@@ -289,7 +277,6 @@ struct TritonXPULegalizePass
             }
           }
         }
-
         if (auto expandDimOp = dyn_cast<triton::ExpandDimsOp>(op)) {
           auto src = expandDimOp.getSrc();
           auto result = expandDimOp.getResult();
@@ -303,7 +290,6 @@ struct TritonXPULegalizePass
             }
           }
         }
-
         if (auto broadcastOp = dyn_cast<triton::xpu::BroadcastOp>(op)) {
           auto src = broadcastOp.getSrc();
           auto result = broadcastOp.getResult();
@@ -320,16 +306,9 @@ struct TritonXPULegalizePass
             }
           }
         }
-
         if (auto reduceOp = dyn_cast<triton::ReduceOp>(op)) {
           if (reduceOp.getAxis() == 0) {
             getOpChainFwd(innerChain, reduceOp);
-          }
-        }
-
-        if (auto scanOp = dyn_cast<triton::ScanOp>(op)) {
-          if (scanOp.getAxis() == 0) {
-            getOpChainFwd(innerChain, scanOp);
           }
         }
       }
@@ -354,29 +333,17 @@ struct TritonXPULegalizePass
 
     // Find SM2GM ptr op chain
     llvm::SetVector<Operation *> sm2gmPtrLenOpChain;
-    if (this->isUseMaskZero) {
-      m.walk([&](triton::xpu::SM2GMMaskOp sm2gmOp) {
-        sm2gmPtrLenOpChain.insert(sm2gmOp);
-        getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getPtr().getDefiningOp());
-        if (sm2gmOp.getMask()) {
-          getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getMask().getDefiningOp());
-        }
-      });
-    } else {
-      m.walk([&](triton::xpu::SM2GMOp sm2gmOp) {
-        sm2gmPtrLenOpChain.insert(sm2gmOp);
-        getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getPtr().getDefiningOp());
-        if (sm2gmOp.getLen()) {
-          getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getLen().getDefiningOp());
-        }
-      });
-    }
+    m.walk([&](triton::xpu::SM2GMOp sm2gmOp) {
+      sm2gmPtrLenOpChain.insert(sm2gmOp);
+      getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getPtr().getDefiningOp());
+      if (sm2gmOp.getLen()) {
+        getOpChainBwd(sm2gmPtrLenOpChain, sm2gmOp.getLen().getDefiningOp());
+      }
+    });
 
     llvm::SetVector<Operation *> endOps;
     m.walk([&](triton::xpu::LM2GMOp lm2gmOp) { endOps.insert(lm2gmOp); });
-    m.walk([&](triton::xpu::LM2GMMaskOp lm2gmOp) { endOps.insert(lm2gmOp); });
     m.walk([&](triton::xpu::SM2GMOp sm2gmOp) { endOps.insert(sm2gmOp); });
-    m.walk([&](triton::AtomicRMWOp rmwOp) { endOps.insert(rmwOp); });
 
     for (auto currStoreOp : endOps) {
       if (!visitedOps.contains(currStoreOp) &&
@@ -400,23 +367,10 @@ struct TritonXPULegalizePass
         for (auto op : allOpTree) {
           if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(op)) {
             auto loadResType = loadOp.getResult().getType();
-            LLVM_DEBUG(llvm::dbgs()
-                       << "[tensorTypes emplace_back]-loadResType: "
-                       << loadResType << "\n");
             tensorTypes.emplace_back(loadResType);
           }
           if (auto storeOp = dyn_cast<triton::xpu::LM2GMOp>(op)) {
             auto storeValType = storeOp.getValue().getType();
-            LLVM_DEBUG(llvm::dbgs()
-                       << "[tensorTypes emplace_back]-storeValType: "
-                       << storeValType << "\n");
-            tensorTypes.emplace_back(storeValType);
-          }
-          if (auto storeOp = dyn_cast<triton::xpu::LM2GMMaskOp>(op)) {
-            auto storeValType = storeOp.getValue().getType();
-            LLVM_DEBUG(llvm::dbgs()
-                       << "[tensorTypes emplace_back]-storeValType: "
-                       << storeValType << "\n");
             tensorTypes.emplace_back(storeValType);
           }
         }
@@ -431,30 +385,17 @@ struct TritonXPULegalizePass
     // 0. Get reduceId/reduceNum for shared memory init
     unsigned reduceId = 0;
     unsigned reduceNum = 0;
-    unsigned scanId = 0;
-    unsigned scanNum = 0;
-
     for (auto sortedOpTree : sortedOpTrees) {
       size_t ngroup = 1;
       size_t groupsize = 64;
       size_t rowspercore = 1;
-      if (this->groupsPerCluster > 1) {
-        ngroup = this->groupsPerCluster;
-        assert(this->coreNum % ngroup == 0 &&
-               "groups_per_cluster only could be 1, 2, 4, 8, 16, 32, 64");
-        groupsize = ceil<size_t>(this->coreNum, ngroup);
-      } else {
-        getGroupInfo(sortedOpTree, ngroup, groupsize, rowspercore);
-      }
+      getGroupInfo(sortedOpTree, ngroup, groupsize, rowspercore);
       reduceNGroups.emplace_back(ngroup);
       reduceGroupSizes.emplace_back(groupsize);
       reduceRowsPerCores.emplace_back(rowspercore);
       for (auto op : sortedOpTree) {
         if (auto reduceOp = dyn_cast<triton::ReduceOp>(op)) {
           reduceNum++;
-        }
-        if (auto scanOp = dyn_cast<triton::ScanOp>(op)) {
-          scanNum++;
         }
       }
     }
@@ -515,9 +456,7 @@ struct TritonXPULegalizePass
           }
         }
       }
-      bool isReduceMultiGroup = this->groupsPerCluster > 1
-                                    ? true
-                                    : (reduceNGroups[i] > 1 ? true : false);
+      bool isReduceMultiGroup = reduceNGroups[i] > 1 ? true : false;
       llvm::SmallVector<size_t> iterCount =
           getIterationCount(tensorTypes, isReduceMultiGroup, unrollOpt);
 
@@ -528,31 +467,11 @@ struct TritonXPULegalizePass
         }
       });
 
-      m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
-        if (findUserOp<triton::ReduceOp>(gm2lmOp) ||
-            findUserOp<triton::xpu::ReduceOp>(gm2lmOp)) {
-          atomicSim = false;
-        }
-      });
-
       if (atomicSim) {
         int32_t lrie = 1;
-        m.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
-          int32_t _lrie = gm2lmOp.getLrie();
-          if (_lrie > 1) {
-            lrie = _lrie;
-          }
-        });
-        m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
-          int32_t _lrie = gm2lmOp.getLrie();
-          if (_lrie > 1) {
-            lrie = _lrie;
-          }
-        });
-        if (lrie >= 1) {
-          iterCount.assign(iterCount.size(),
-                           mlir::ceil<size_t>(simIterCount, lrie));
-        }
+        m.walk([&](triton::xpu::GM2LMOp gm2lmOp) { lrie = gm2lmOp.getLrie(); });
+        iterCount.assign(iterCount.size(),
+                         mlir::ceil<size_t>(simIterCount, lrie));
       }
 
       iterCounts.emplace_back(iterCount);
@@ -569,33 +488,21 @@ struct TritonXPULegalizePass
       llvm::SetVector<Operation *> innerChain = innerChains[i];
       llvm::SetVector<Operation *> outerChain = outerChains[i];
 
-      bool isCreateInnerMROp = false;
-      triton::MakeRangeOp newInnerMRAlreadyCreateOp;
       for (auto it = outerChain.begin(); it != outerChain.end(); ++it) {
         Operation *outerOp = *it;
         if (inOpChain(innerChain, outerOp)) { // Common MROp
           if (auto rangeOp = dyn_cast<triton::MakeRangeOp>(outerOp)) {
             // Find MROp's Whose User is ExpandDimsOp(dim=0)
-            SetVector<Operation *> outerRangeUsers(rangeOp->getUsers().begin(),
-                                                   rangeOp->getUsers().end());
-            for (auto user : outerRangeUsers) {
+            for (auto user : rangeOp->getUsers()) {
               if (auto op = findUserOp<triton::ExpandDimsOp>(user)) {
                 auto expandDimsOp = cast<triton::ExpandDimsOp>(op);
                 if (expandDimsOp.getAxis() == 0) {
                   // Recover MakeRangeOp
                   OpBuilder builder(rangeOp);
                   auto loc = builder.getUnknownLoc();
-
-                  triton::MakeRangeOp newInnerRangeOp;
-                  if (!isCreateInnerMROp) {
-                    newInnerRangeOp = builder.create<triton::MakeRangeOp>(
-                        loc, rangeOp.getType(), rangeOp.getStart(),
-                        rangeOp.getEnd());
-                    newInnerMRAlreadyCreateOp = newInnerRangeOp;
-                    isCreateInnerMROp = true;
-                  } else {
-                    newInnerRangeOp = newInnerMRAlreadyCreateOp;
-                  }
+                  auto newMakeRangeOp = builder.create<triton::MakeRangeOp>(
+                      loc, rangeOp.getType(), rangeOp.getStart(),
+                      rangeOp.getEnd());
 
                   // Link To InnerChain
                   auto operands = user->getOperands();
@@ -604,14 +511,14 @@ struct TritonXPULegalizePass
                     auto operand = *_it;
                     if (operand == rangeOp) {
                       user->setOperand(std::distance(operands.begin(), _it),
-                                       newInnerRangeOp);
+                                       newMakeRangeOp);
                     }
                   }
 
                   // Now the old common mrOp is only used by outerChain
-                  innerChains[i].insert(newInnerRangeOp);
+                  innerChains[i].insert(newMakeRangeOp);
                   innerChains[i].remove(rangeOp);
-                  sortedOpTrees[i].insert(newInnerRangeOp);
+                  sortedOpTrees[i].insert(newMakeRangeOp);
                   sortedOpTrees[i] = sortOpTreeBwd(sortedOpTrees[i]);
                 }
               }
@@ -620,8 +527,6 @@ struct TritonXPULegalizePass
         }
       }
     }
-
-    // llvm::errs() << "after Duplicate the MakeRangeOp:\n" << m << "\n";
 
     // for (auto [i, opTree] : llvm::enumerate(allOpTrees)) {
     //   LLVM_DEBUG(llvm::dbgs() << "\nDump OpTree-" << i << ":\n");
@@ -650,36 +555,17 @@ struct TritonXPULegalizePass
     };
 
     auto printCSV = [&](mlir::ModuleOp &mod) {
-      llvm::errs() << "{\n";
-      llvm::errs() << "Operation,Chain Info\n";
+      LLVM_DEBUG(llvm::dbgs() << "{\n");
+      LLVM_DEBUG(llvm::dbgs() << "Operation,Chain Info\n");
 
       // 遍历 mod 中的所有操作
       mod.walk([&](mlir::Operation *op) {
         if (dyn_cast<triton::FuncOp>(op) || dyn_cast<mlir::ModuleOp>(op))
           return;
-
         // 获取操作的字符串表示，记得处理逗号和换行符
         std::string opStr;
         llvm::raw_string_ostream os(opStr);
-        if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-          os << "scf.for ";
-          os << forOp.getInductionVar() << " = " << forOp.getLowerBound()
-             << " to " << forOp.getUpperBound() << " step " << forOp.getStep();
-          if (forOp->getNumOperands() > 0) {
-            os << " iter_args(";
-            auto args = forOp.getRegionIterArgs();
-            auto inits = forOp.getInitArgs();
-            for (unsigned i = 0; i < args.size(); ++i) {
-              if (i)
-                os << ", ";
-              os << args[i] << " = " << inits[i];
-            }
-            os << ")";
-          }
-        } else {
-          op->print(os);
-        }
-
+        op->print(os);
         // 替换逗号和换行符
         std::replace(opStr.begin(), opStr.end(), ',', ';');
         std::replace(opStr.begin(), opStr.end(), '\n', ' ');
@@ -688,9 +574,9 @@ struct TritonXPULegalizePass
         std::string chainInfo = getInnerChainInfo(op);
 
         // 输出一行
-        llvm::errs() << "\t" << opStr << "," << chainInfo << "\n";
+        LLVM_DEBUG(llvm::dbgs() << opStr << "," << chainInfo << "\n");
       });
-      llvm::errs() << "}\n";
+      LLVM_DEBUG(llvm::dbgs() << "}\n");
     };
 
     // printCSV(m);
@@ -728,16 +614,6 @@ struct TritonXPULegalizePass
       Operation *yieldOp = forLoopOp.getBody()->getTerminator();
 
       // LLVM_DEBUG(llvm::dbgs() << "\nBefore Loop Move:\n" << m << " \n");
-
-      auto handleXpuPrintOp = [&](XPUPrintOp xpuPrintOp) {
-        OpBuilder replacer(xpuPrintOp);
-        Value bound = replacer.create<mlir::arith::IndexCastOp>(
-            loc, replacer.getI64Type(), upper);
-        Value idx64 =
-            replacer.create<arith::ExtSIOp>(loc, replacer.getI64Type(), idx);
-        xpuPrintOp.setOperand(4, idx64);
-        xpuPrintOp.setOperand(6, bound);
-      };
 
       for (auto op : llvm::reverse(sortedOpTree)) {
         // op->dump();
@@ -787,7 +663,7 @@ struct TritonXPULegalizePass
           //   LLVM_DEBUG(llvm::dbgs() << "\nbefore modify reduceOp\n" << m);
           auto newReduceIdxOp = builder.create<triton::xpu::ReduceOp>(
               loc, reduceOp->getResultTypes(), reduceOp.getSrcs(),
-              reduceOp.getAxis(), outIterCount, idx);
+              reduceOp.getAxis(), idx);
           auto &newCombineOp = newReduceIdxOp.getCombineOp();
           builder.cloneRegionBefore(reduceOp.getCombineOp(), newCombineOp,
                                     newCombineOp.end());
@@ -803,31 +679,6 @@ struct TritonXPULegalizePass
                   loc, redReturnOp.getOperands());
               builder.restoreInsertionPoint(oldInsertionPoint);
               redReturnOp->replaceAllUsesWith(newRedReturnOp->getResults());
-              opInCombine.erase(); // avoid the HasParent Trait
-              break;               // stop the loop in combine region
-            }
-          }
-          op->erase();
-        } else if (auto scanOp = dyn_cast<triton::ScanOp>(op)) {
-          //   LLVM_DEBUG(llvm::dbgs() << "\nbefore modify reduceOp\n" << m);
-          auto newScanIdxOp = builder.create<triton::xpu::ScanOp>(
-              loc, scanOp->getResultTypes(), scanOp.getSrcs(), scanOp.getAxis(),
-              scanOp.getReverse(), idx);
-          auto &newCombineOp = newScanIdxOp.getCombineOp();
-          builder.cloneRegionBefore(scanOp.getCombineOp(), newCombineOp,
-                                    newCombineOp.end());
-          setSlicedResTy(newScanIdxOp, isInner);
-          op->replaceAllUsesWith(newScanIdxOp->getResults());
-          //   LLVM_DEBUG(llvm::dbgs() << "\nAfter modify reduceOp\n" << m);
-          for (auto &opInCombine : newCombineOp.getOps()) {
-            if (auto scanReturnOp =
-                    dyn_cast<mlir::triton::ScanReturnOp>(opInCombine)) {
-              auto oldInsertionPoint = builder.saveInsertionPoint();
-              builder.setInsertionPoint(scanReturnOp);
-              auto newScanReturnOp = builder.create<triton::xpu::ScanReturnOp>(
-                  loc, scanReturnOp.getOperands());
-              builder.restoreInsertionPoint(oldInsertionPoint);
-              scanReturnOp->replaceAllUsesWith(newScanReturnOp->getResults());
               opInCombine.erase(); // avoid the HasParent Trait
               break;               // stop the loop in combine region
             }
@@ -878,8 +729,7 @@ struct TritonXPULegalizePass
               OpBuilder builderInFor(reduceOpInFor);
               auto newReduceIdxOp = builderInFor.create<triton::xpu::ReduceOp>(
                   reduceOpInFor->getLoc(), reduceOpInFor->getResultTypes(),
-                  reduceOpInFor.getSrcs(), reduceOpInFor.getAxis(),
-                  outIterCount, idx);
+                  reduceOpInFor.getSrcs(), reduceOpInFor.getAxis(), idx);
               auto &newCombineOp = newReduceIdxOp.getCombineOp();
               builderInFor.cloneRegionBefore(reduceOpInFor.getCombineOp(),
                                              newCombineOp, newCombineOp.end());
@@ -899,33 +749,6 @@ struct TritonXPULegalizePass
                   erasedOps.insert(redReturnOp);
                 }
               }
-            } else if (auto scanOpInFor =
-                           mlir::dyn_cast<triton::ScanOp>(inBlockOp)) {
-              OpBuilder builderInFor(scanOpInFor);
-              auto newScanIdxOp = builderInFor.create<triton::xpu::ScanOp>(
-                  scanOpInFor->getLoc(), scanOpInFor->getResultTypes(),
-                  scanOpInFor.getSrcs(), scanOpInFor.getAxis(),
-                  scanOpInFor.getReverse(), idx);
-              auto &newCombineOp = newScanIdxOp.getCombineOp();
-              builderInFor.cloneRegionBefore(scanOpInFor.getCombineOp(),
-                                             newCombineOp, newCombineOp.end());
-              setSlicedResTy(newScanIdxOp, inBlockIsInner);
-              scanOpInFor.replaceAllUsesWith(newScanIdxOp->getResults());
-              erasedOps.insert(scanOpInFor);
-              for (auto &opInCombine : newCombineOp.getOps()) {
-                if (auto scanReturnOp =
-                        dyn_cast<mlir::triton::ScanReturnOp>(opInCombine)) {
-                  auto oldInsertionPoint = builderInFor.saveInsertionPoint();
-                  builderInFor.setInsertionPoint(scanReturnOp);
-                  auto newScanReturnOp =
-                      builderInFor.create<triton::xpu::ScanReturnOp>(
-                          scanReturnOp.getLoc(), scanReturnOp.getOperands());
-                  builderInFor.restoreInsertionPoint(oldInsertionPoint);
-                  scanReturnOp->replaceAllUsesWith(
-                      newScanReturnOp->getResults());
-                  erasedOps.insert(scanReturnOp);
-                }
-              }
             } else if (auto ifOp = mlir::dyn_cast<mlir::scf::IfOp>(inBlockOp)) {
               // Set IfOp's childOp Arg Type(Then)
               auto &thenRegion = ifOp.getThenRegion();
@@ -943,9 +766,6 @@ struct TritonXPULegalizePass
                                                     iterCount, isInnerOp);
                   newInBlockOpRes.setType(slicedOpType);
                 }
-                if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
-                  handleXpuPrintOp(xpuPrintOp);
-                }
               }
 
               // Set IfOp's childOp Arg Type(Else)
@@ -955,9 +775,6 @@ struct TritonXPULegalizePass
                 for (auto &inBlockOp0 : elseBlock) {
                   bool isInnerOp = inOpChain(innerChain, &inBlockOp0);
                   setSlicedResTy(&inBlockOp0, isInnerOp);
-                  if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp0)) {
-                    handleXpuPrintOp(xpuPrintOp);
-                  }
                 }
                 for (auto newInBlockOpRes : ifOp->getResults()) {
                   auto slicedOpType =
@@ -965,8 +782,6 @@ struct TritonXPULegalizePass
                   newInBlockOpRes.setType(slicedOpType);
                 }
               }
-            } else if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
-              handleXpuPrintOp(xpuPrintOp);
             } else {
               setSlicedResTy(&inBlockOp, inBlockIsInner);
             }
@@ -1008,37 +823,6 @@ struct TritonXPULegalizePass
                                                 iterCount, isInnerOp);
               newInBlockOpRes.setType(slicedOpType);
             }
-            if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
-              handleXpuPrintOp(xpuPrintOp);
-            } else if (auto reduceOpInIf =
-                           mlir::dyn_cast<triton::ReduceOp>(inBlockOp)) {
-              OpBuilder builderInFor(reduceOpInIf);
-              auto newReduceIdxOp = builderInFor.create<triton::xpu::ReduceOp>(
-                  reduceOpInIf->getLoc(), reduceOpInIf->getResultTypes(),
-                  reduceOpInIf.getSrcs(), reduceOpInIf.getAxis(), outIterCount,
-                  idx);
-              auto &newCombineOp = newReduceIdxOp.getCombineOp();
-              builderInFor.cloneRegionBefore(reduceOpInIf.getCombineOp(),
-                                             newCombineOp, newCombineOp.end());
-              setSlicedResTy(newReduceIdxOp, isInnerOp);
-              reduceOpInIf.replaceAllUsesWith(newReduceIdxOp->getResults());
-              for (auto &opInCombine : newCombineOp.getOps()) {
-                if (auto redReturnOp =
-                        dyn_cast<mlir::triton::ReduceReturnOp>(opInCombine)) {
-                  auto oldInsertionPoint = builderInFor.saveInsertionPoint();
-                  builderInFor.setInsertionPoint(redReturnOp);
-                  auto newRedReturnOp =
-                      builderInFor.create<triton::xpu::ReduceReturnOp>(
-                          redReturnOp.getLoc(), redReturnOp.getOperands());
-                  builderInFor.restoreInsertionPoint(oldInsertionPoint);
-                  redReturnOp->replaceAllUsesWith(newRedReturnOp->getResults());
-                  opInCombine.erase(); // avoid the HasParent Trait
-                  break;               // stop the loop in combine region
-                }
-              }
-
-              //   reduceOpInIf.erase();
-            }
           }
 
           // Set IfOp's childOp Arg Type(Else)
@@ -1060,9 +844,6 @@ struct TritonXPULegalizePass
                                                   iterCount, isInnerOp);
                 newInBlockOpRes.setType(slicedOpType);
               }
-              if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(inBlockOp)) {
-                handleXpuPrintOp(xpuPrintOp);
-              }
             }
           }
 
@@ -1075,20 +856,16 @@ struct TritonXPULegalizePass
                   cast<RankedTensorType>(reshapeOp.getOperand().getType());
               auto reshapeSrcShape = reshapeSrcTy.getShape();
               size_t reshapeSrcSize = product(reshapeSrcShape);
-
-              auto reshapeResSize = product(reshapeResShape);
               llvm::SmallVector<int64_t> slicedShape(1, 1u);
 
               slicedShape[0] =
-                  std::ceil(static_cast<double>(reshapeResSize / iterCount[0]));
+                  std::ceil(static_cast<double>(reshapeSrcSize / iterCount[0]));
               auto slicedReshapeSrcTy = RankedTensorType::get(
                   slicedShape, reshapeSrcTy.getElementType(),
                   reshapeResTy.getEncoding());
               reshapeOp.getResult().setType(slicedReshapeSrcTy);
             }
           }
-        } else if (auto xpuPrintOp = dyn_cast<XPUPrintOp>(op)) {
-          handleXpuPrintOp(xpuPrintOp);
         } else {
           setSlicedResTy(op, isInner);
         }
@@ -1125,6 +902,7 @@ struct TritonXPULegalizePass
               auto coresPerGroup = resEncoding.getCoresPerGroup();
               auto groupsPerCluster = resEncoding.getGroupsPerCluster();
               auto order = resEncoding.getOrder();
+              auto isReduceOpt = resEncoding.getIsReduceOpt();
 
               SmallVector<unsigned> newCoresPerGroup(coresPerGroup.size(), 1);
               SmallVector<unsigned> newGroupsPerCluster(groupsPerCluster.size(),
@@ -1134,7 +912,7 @@ struct TritonXPULegalizePass
 
               auto newEncoding = triton::xpu::ClusterLayoutAttr::get(
                   context, newSizePerCore, newCoresPerGroup,
-                  newGroupsPerCluster, order);
+                  newGroupsPerCluster, order, isReduceOpt);
 
               auto newResTy =
                   RankedTensorType::get(resShape, elemTy, newEncoding);
@@ -1159,6 +937,7 @@ struct TritonXPULegalizePass
               auto coresPerGroup = resGlobalEncoding.getCoresPerGroup();
               auto groupsPerCluster = resGlobalEncoding.getGroupsPerCluster();
               auto order = resGlobalEncoding.getOrder();
+              auto isReduceOpt = resGlobalEncoding.getIsReduceOpt();
 
               SmallVector<unsigned> newCoresPerGroup(coresPerGroup.size(), 1);
               SmallVector<unsigned> newGroupsPerCluster(groupsPerCluster.size(),
@@ -1176,7 +955,7 @@ struct TritonXPULegalizePass
 
               auto newGlobalEncoding = triton::xpu::ClusterLayoutAttr::get(
                   context, newSizePerCore, newCoresPerGroup,
-                  newGroupsPerCluster, order);
+                  newGroupsPerCluster, order, isReduceOpt);
               auto newEncoding = triton::gpu::SliceEncodingAttr::get(
                   context, resEncoding.getDim(), newGlobalEncoding);
 
@@ -1199,85 +978,19 @@ struct TritonXPULegalizePass
       reduceId++;
     });
 
-    // Set ScanLoweringHelper
-    m.walk([&](triton::xpu::ScanOp scanOp) {
-      ScanLoweringHelper helper(scanOp);
-      helper.setScanId(scanId);
-      helper.setScanNum(scanNum);
-      scanId++;
-    });
-
     // MakeRange Replace Protection
-    SetVector<Operation *> outMakeRanges;
-    m.walk([&](triton::ExpandDimsOp expandDimOp) {
-      if (expandDimOp.getAxis() == 1) {
-        if (auto mrOp =
-                findDefOpBwd<triton::MakeRangeOp>(expandDimOp.getSrc())) {
-          outMakeRanges.insert(mrOp);
-        }
-      }
-    });
     m.walk([&](triton::MakeRangeOp mrOp) {
       OpBuilder builder(mrOp);
       auto loc = mrOp->getLoc();
       uint32_t start = mrOp.getStart();
       uint32_t end = mrOp.getEnd();
       uint32_t realSize = end - start;
-      if (outMakeRanges.count(mrOp)) {
-        size_t groupSize = std::ceil(this->coreNum / this->groupsPerCluster);
-        size_t rowsPerCore = 1; // TODO: Set Real Data
-        auto idx = builder.create<mlir::arith::ConstantOp>(
-            loc, builder.getI32IntegerAttr(0));
-        auto newOutRangeOp = builder.create<triton::xpu::OutRangeOp>(
-            loc, mrOp.getType(), groupSize, rowsPerCore, idx);
-        mrOp->replaceAllUsesWith(newOutRangeOp->getResults());
-      } else {
-        auto newMakeRangeOp = builder.create<triton::xpu::MakeRangeOp>(
-            loc, mrOp.getType(), builder.getI32IntegerAttr(start),
-            builder.getI32IntegerAttr(end), builder.getI32IntegerAttr(realSize),
-            Value(), Value());
-        mrOp->replaceAllUsesWith(newMakeRangeOp->getResults());
-      }
+      auto newMakeRangeOp = builder.create<triton::xpu::MakeRangeOp>(
+          loc, mrOp.getType(), builder.getI32IntegerAttr(start),
+          builder.getI32IntegerAttr(end), builder.getI32IntegerAttr(realSize),
+          Value(), Value());
+      mrOp->replaceAllUsesWith(newMakeRangeOp->getResults());
     });
-
-    // GM2LM Cache
-    SmallVector<SetVector<Operation *>> lmCacheChains;
-    m.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
-      OpBuilder builder(gm2lmOp);
-      auto loc = gm2lmOp->getLoc();
-      if (gm2lmOp.getCache()) {
-        SetVector<Operation *> lmCacheChain;
-        getOpChainBwd(lmCacheChain, gm2lmOp);
-        SetVector<Operation *> sortedLmCacheChain = sortOpTreeBwd(lmCacheChain);
-        lmCacheChains.emplace_back(sortedLmCacheChain);
-      }
-    });
-    m.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
-      OpBuilder builder(gm2lmOp);
-      auto loc = gm2lmOp->getLoc();
-      if (gm2lmOp.getCache()) {
-        SetVector<Operation *> lmCacheChain;
-        getOpChainBwd(lmCacheChain, gm2lmOp);
-        SetVector<Operation *> sortedLmCacheChain = sortOpTreeBwd(lmCacheChain);
-        lmCacheChains.emplace_back(sortedLmCacheChain);
-      }
-    });
-
-    for (int i = lmCacheChains.size() - 1; i >= 0; --i) {
-      auto lmCacheChain = lmCacheChains[i];
-      for (auto op : lmCacheChain) {
-        // 1.Find FuncOp
-        Operation *ancestorOp = op;
-        while (!isa<triton::FuncOp>(ancestorOp)) {
-          Block *block = ancestorOp->getBlock();
-          ancestorOp = block->getParentOp();
-        }
-        // 2. Move alloca in the Front of the First Op in the FuncOp Body
-        Operation *firstOp =
-            &(*(cast<triton::FuncOp>(ancestorOp).getBody().front().begin()));
-        op->moveBefore(firstOp);
-      }
-    }
   }
 };
 

@@ -8,7 +8,6 @@
 //===----------------------------------------------------------------------===//
 
 // clang-format off
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 // clang-format on
@@ -19,11 +18,18 @@ namespace mlir {
 namespace triton {
 namespace xpu {
 
+enum class ElemState {
+  SS = 0, /*00*/
+  SV = 1, /*01*/
+  VS = 2, /*10*/
+  VV = 3  /*11*/
+};
+
 using OperationTree = llvm::SetVector<mlir::Operation *>;
 
 #define ARITH_BINARY_FLOAT_OP                                                  \
   arith::AddFOp, arith::SubFOp, arith::MulFOp, arith::DivFOp,                  \
-      arith::MaximumFOp, arith::MinimumFOp, arith::MaxNumFOp, arith::MinNumFOp
+      arith::MaximumFOp, arith::MinimumFOp
 
 #define ARITH_BINARY_INT_OP                                                    \
   arith::SubIOp, arith::AndIOp, arith::OrIOp, arith::MulIOp, arith::AddIOp,    \
@@ -33,7 +39,10 @@ using OperationTree = llvm::SetVector<mlir::Operation *>;
   math::ExpOp, math::SqrtOp, math::SinOp, math::CosOp, arith::ExtFOp,          \
       arith::TruncFOp, math::AbsFOp
 
-#define REDUCE_COMBINE_OP COMBINE_OP, triton::xpu::ReduceReturnOp
+// TODO: VMin when LLVM can select
+#define REDUCE_COMBINE_OP                                                      \
+  arith::AddFOp, arith::MulFOp, arith::MaxNumFOp, arith::MinNumFOp,            \
+      arith::OrIOp, arith::XOrIOp, arith::AndIOp, triton::xpu::ReduceReturnOp
 
 template <typename OP> struct VOp;
 
@@ -48,8 +57,6 @@ VOP(arith::MulFOp, triton::xpu::VvmulFOp)
 VOP(arith::DivFOp, triton::xpu::VvdivFOp)
 VOP(arith::MaximumFOp, triton::xpu::VvmaxFOp)
 VOP(arith::MinimumFOp, triton::xpu::VvminFOp)
-VOP(arith::MaxNumFOp, triton::xpu::VvmaxNumFOp)
-VOP(arith::MinNumFOp, triton::xpu::VvminNumFOp)
 
 VOP(arith::AddIOp, triton::xpu::VvaddIOp)
 VOP(arith::SubIOp, triton::xpu::VvsubIOp)
@@ -201,32 +208,9 @@ struct TritonXPUVectorizePass
     return isVectorized;
   }
 
-  bool isOperandVectorizable(triton::xpu::ReduceOp redOp, Type operandTy) {
-    unsigned numElems = 0;
-    auto axis = redOp.getAxis();
-
-    if (auto operandTensorTy = dyn_cast<RankedTensorType>(operandTy)) {
-      auto operandShape = operandTensorTy.getShape();
-      numElems = operandShape[axis];
-    }
-
-    Type vecTy = getElementTypeOrSelf(operandTy);
-    Type elemTy = getElementTypeOrSelf(vecTy);
-    auto elemWidth = elemTy.getIntOrFloatBitWidth();
-    auto vectorWidth = 512 / elemWidth;
-
-    if (numElems < vectorWidth || numElems % vectorWidth > 0 ||
-        !vectorizedTyValid(elemTy))
-      return false;
-
-    return true;
-  }
-
   bool vectorize(Operation *op, OperationTree &visited,
                  OperationTree &vectorizedOps) {
-    if (!op) {
-      return false;
-    }
+    assert(op && "[Vectorization]: Empty Operation pointer");
     visited.insert(op);
 
     if (vectorizedOps.contains(op))
@@ -234,12 +218,8 @@ struct TritonXPUVectorizePass
 
     bool isVectorized = false;
     TypeSwitch<const Operation *>(op)
-        .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) { isVectorized = true; })
-        .Case<triton::xpu::GM2LMMaskOp>(
-            [&](auto gm2lmmaskOp) { isVectorized = true; })
-        .Case<triton::xpu::LM2GMOp>([&](auto lm2gmOp) { isVectorized = true; })
-        .Case<triton::xpu::LM2GMMaskOp>(
-            [&](auto lm2gmmaskOp) { isVectorized = true; })
+        .Case<triton::xpu::GM2LMOp>([&](auto loadOp) { isVectorized = true; })
+        .Case<triton::xpu::LM2GMOp>([&](auto loadOp) { isVectorized = true; })
         .Case<triton::xpu::GetCoreIdOp>(
             [&](auto coreIdOp) { isVectorized = true; })
         .Case<triton::GetProgramIdOp>(
@@ -260,16 +240,6 @@ struct TritonXPUVectorizePass
         .Case<triton::xpu::ReduceOp>([&](auto reduceOp) {
           if (ReduceVec) {
             isVectorized = true;
-
-            for (int i = 0; i < reduceOp.getOperands().size() - 1; ++i) {
-              auto reduceOperand = reduceOp.getOperands()[i];
-              auto reduceOperandTy = reduceOperand.getType();
-
-              if (!isOperandVectorizable(reduceOp, reduceOperandTy)) {
-                isVectorized = false;
-              }
-            }
-
             for (Block &block : reduceOp.getCombineOp().getBlocks()) {
               for (auto &op : block) {
                 if (!isa<REDUCE_COMBINE_OP>(op)) {
@@ -310,8 +280,8 @@ struct TritonXPUVectorizePass
 
           if (rank == 2 && resNumElems >= 16) {
             // srcShape[0] > 32: Scalar Calculations Perform Better than Vector
-            // Calculations When The Data Size is Small. (Why > 32? Which Op?)
-            if ((srcShape[0] == resShape[0] && srcShape[1] == 1) ||
+            // Calculations When The Data Size is Small.
+            if ((srcShape[0] > 32 && srcShape[1] == 1) ||
                 (srcShape[0] == 1 && srcShape[1] == resShape[1])) {
               isVectorized = true;
             }
@@ -327,13 +297,9 @@ struct TritonXPUVectorizePass
                          vectorize(addPtrOp.getOffset().getDefiningOp(),
                                    visited, vectorizedOps);
         })
-        .Case<triton::xpu::ConvertLayoutOp>([&](auto cvtOp) {
-          auto cvtOpResEncoding =
-              cast<RankedTensorType>(cvtOp.getResult().getType()).getEncoding();
-          if (isa<triton::xpu::ClusterLayoutAttr>(cvtOpResEncoding)) {
-            isVectorized = vectorize(cvtOp.getOperand().getDefiningOp(),
-                                     visited, vectorizedOps);
-          }
+        .Case<triton::gpu::ConvertLayoutOp>([&](auto cvtOp) {
+          isVectorized = vectorize(cvtOp.getOperand().getDefiningOp(), visited,
+                                   vectorizedOps);
         })
         .Case<arith::SelectOp>([&](auto selectOp) {
           auto tv = selectOp.getTrueValue();
@@ -353,31 +319,15 @@ struct TritonXPUVectorizePass
           auto rhs = cmpFOp.getRhs();
           isVectorized = binLikeOpVectorize(lhs, rhs, visited, vectorizedOps);
         })
-        .Case<arith::TruncIOp>([&](auto truncIOp) {
-          isVectorized = false;
-          if (auto extElemwiseOp = dyn_cast<triton::ExternElementwiseOp>(
-                  truncIOp.getIn().getDefiningOp())) {
-            isVectorized =
-                vectorize(extElemwiseOp.getOperands().front().getDefiningOp(),
-                          visited, vectorizedOps);
-          }
-        })
-        .Case<triton::xpu::CmpFOp>([&](auto cmpFOp) {
-          auto lhs = cmpFOp.getLhs();
-          auto rhs = cmpFOp.getRhs();
-          isVectorized = binLikeOpVectorize(lhs, rhs, visited, vectorizedOps);
-        })
         .Case<scf::IfOp>([&](auto ifOp) {
           // For then Region
           Region &thenRegion = ifOp.getThenRegion();
           Block &thenBlock = thenRegion.front();
           Operation *thenTerminator = thenBlock.getTerminator();
-          isVectorized = true;
+
           if (auto yieldOp = dyn_cast<scf::YieldOp>(thenTerminator)) {
-            for (int i = 0; i < yieldOp.getOperands().size(); ++i) {
-              if (auto yieldDef = yieldOp.getOperands()[i].getDefiningOp()) {
-                isVectorized &= vectorize(yieldDef, visited, vectorizedOps);
-              }
+            if (auto prevOp = yieldOp.getOperands().front().getDefiningOp()) {
+              isVectorized = vectorize(prevOp, visited, vectorizedOps);
             }
           }
 
@@ -387,10 +337,8 @@ struct TritonXPUVectorizePass
             Block &elseBlock = elseRegion.front();
             Operation *elseTerminator = elseBlock.getTerminator();
             if (auto yieldOp = dyn_cast<scf::YieldOp>(elseTerminator)) {
-              for (int i = 0; i < yieldOp.getOperands().size(); ++i) {
-                if (auto yieldDef = yieldOp.getOperands()[i].getDefiningOp()) {
-                  isVectorized &= vectorize(yieldDef, visited, vectorizedOps);
-                }
+              if (auto prevOp = yieldOp.getOperands().front().getDefiningOp()) {
+                isVectorized &= vectorize(prevOp, visited, vectorizedOps);
               }
             }
           }
@@ -401,21 +349,17 @@ struct TritonXPUVectorizePass
           Region &region = forOp.getRegion();
           Block &block = region.front();
           Operation *terminator = block.getTerminator();
-          isVectorized = true;
+
           if (auto yieldOp = dyn_cast<scf::YieldOp>(terminator)) {
-            for (int i = 0; i < yieldOp.getOperands().size(); ++i) {
-              if (auto yieldDef = yieldOp.getOperands()[i].getDefiningOp()) {
-                isVectorized &= vectorize(yieldDef, visited, vectorizedOps);
-              }
+            if (auto prevOp = yieldOp.getOperands().front().getDefiningOp()) {
+              isVectorized = vectorize(prevOp, visited, vectorizedOps) &&
+                             iterArgsInitValues.size() == 1;
             }
           }
         })
         .Case<scf::YieldOp>([&](auto yieldOp) {
-          isVectorized = true;
-          for (int i = 0; i < yieldOp.getOperands().size(); ++i) {
-            if (auto yieldDef = yieldOp.getOperands()[i].getDefiningOp()) {
-              isVectorized &= vectorize(yieldDef, visited, vectorizedOps);
-            }
+          if (auto prevOp = yieldOp.getOperands().front().getDefiningOp()) {
+            isVectorized = vectorize(prevOp, visited, vectorizedOps);
           }
         })
         .Case<triton::ExternElementwiseOp>([&](auto extElemwiseOp) {
@@ -444,18 +388,6 @@ struct TritonXPUVectorizePass
             //   isVectorized =
             //       isVectorized && vectorize(prevOp, visited, vectorizedOps);
             // }
-          } else if (symbol == "_ZN3xpu5isnanEf") {
-            isVectorized = true;
-            for (auto operand : extElemwiseOp.getOperands()) {
-              isVectorized = vectorize(prevOp, visited, vectorizedOps);
-            }
-          } else if (symbol == "_ZN3xpu6rsqrtfEf") {
-            auto outType =
-                getElementTypeOrSelf(extElemwiseOp.getResult().getType());
-            for (auto operand : extElemwiseOp.getOperands()) {
-              isVectorized =
-                  outType.isF32() && vectorize(prevOp, visited, vectorizedOps);
-            }
           } else {
             isVectorized = false;
             LLVM_DEBUG(llvm::dbgs()
@@ -502,11 +434,11 @@ struct TritonXPUVectorizePass
       if (visited.contains(user))
         continue;
 
-      // FIXME: We've omitted the `other` value of LoadOp when create GM2LMOp
-      // in the past. However, `other` value comes back as we are about to
-      // separate GM2LMOp and LoadOp, and it will lead to a user LoadOp be in
-      // the vectorization path. Actions should be taken to handle this case.
-      // Here we workaround to skip LoadOp's `other` value.
+      // FIXME: We've omitted the `other` value of LoadOp when create GM2LMOp in
+      // the past. However, `other` value comes back as we are about to separate
+      // GM2LMOp and LoadOp, and it will lead to a user LoadOp be in the
+      // vectorization path. Actions should be taken to handle this case. Here
+      // we workaround to skip LoadOp's `other` value.
       if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(user)) {
         if (op == loadOp.getOther().getDefiningOp()) {
           continue;
@@ -521,8 +453,7 @@ struct TritonXPUVectorizePass
     return true;
   }
 
-  RankedTensorType getVectorType(Type tensorType, unsigned _elemWidth = 0,
-                                 bool useElemTy = false) {
+  RankedTensorType getVectorType(Type tensorType, unsigned _elemWidth = 0) {
     unsigned numElems = getTotalElemsPerThread(tensorType);
     Type elemTy = getElementTypeOrSelf(tensorType);
     auto elemWidth =
@@ -550,29 +481,25 @@ struct TritonXPUVectorizePass
       auto corePerGroup = oriEncoding.getCoresPerGroup().vec();
       auto groupsPerCluster = oriEncoding.getGroupsPerCluster().vec();
       auto order = oriEncoding.getOrder().vec();
+      auto isReduceOpt = oriEncoding.getIsReduceOpt();
 
       sizePerCore[rank - 1] =
           std::max(1, int(sizePerCore[rank - 1] / vectorWidth));
 
       auto newEncoding = triton::xpu::ClusterLayoutAttr::get(
           tensorType.getContext(), sizePerCore, corePerGroup, groupsPerCluster,
-          order);
+          order, isReduceOpt);
 
       // Step 4. create RankedTensorType
-      newTensorTy =
-          useElemTy
-              ? RankedTensorType::get(newShape, elemTy, newEncoding)
-              : RankedTensorType::get(newShape, newVectorType, newEncoding);
+      newTensorTy = RankedTensorType::get(newShape, newVectorType, newEncoding);
     } else if (numElems == 1) { // special vector<1xf32>
       // Step 1. getVectorType
       VectorType newVectorType = mlir::VectorType::get(1, elemTy);
       // Step 2. getEncoding
       auto newEncoding = triton::xpu::ClusterLayoutAttr::get(
-          tensorType.getContext(), {1}, {4}, {16}, {0});
+          tensorType.getContext(), {1}, {4}, {16}, {0}, false);
       // Step 3. create RankedTensorType
-      newTensorTy = useElemTy
-                        ? RankedTensorType::get(1, elemTy, newEncoding)
-                        : RankedTensorType::get(1, newVectorType, newEncoding);
+      newTensorTy = RankedTensorType::get(1, newVectorType, newEncoding);
     } else {
       llvm_unreachable(
           "Only Supported vector<32xTy> or vector<16xTy> or vector<1xTy>");
@@ -583,17 +510,12 @@ struct TritonXPUVectorizePass
   void processOpVecTy(OperationTree &vectorizedOps, ModuleOp &mod) {
     for (auto *op : vectorizedOps) {
       TypeSwitch<Operation *>(op)
-          .Case<triton::xpu::GM2LMOp>([&](auto gm2lmOp) { (void)gm2lmOp; })
-          .Case<triton::xpu::GM2LMMaskOp>(
-              [&](auto gm2lmmaskOp) { (void)gm2lmmaskOp; })
           .Case<triton::xpu::LoadOp>([&](auto loadOp) {
             auto newVectorizedTensorTy =
                 getVectorType(loadOp.getResult().getType());
             loadOp.getResult().setType(newVectorizedTensorTy);
           })
           .Case<triton::xpu::LM2GMOp>([&](auto lm2gmOp) { (void)lm2gmOp; })
-          .Case<triton::xpu::LM2GMMaskOp>(
-              [&](auto lm2gmmaskOp) { (void)lm2gmmaskOp; })
           .Case<triton::xpu::StoreOp>([&](auto storeOp) { (void)storeOp; })
           .Case<ARITH_BINARY_FLOAT_OP>([&](auto binOp) {
             auto newVectorizedTensorTy =
@@ -648,16 +570,16 @@ struct TritonXPUVectorizePass
             auto forArgs = forBody->getArguments();
             // TODO[dyq]: check getIterOperands -> getInitArgs
             auto iterArgsInitValues = forOp.getInitArgs();
-            for (int i = 0; i < iterArgsInitValues.size(); ++i) {
-              Value iterArgInitValue = iterArgsInitValues[i];
-              auto newVectorizedTensorTy = iterArgInitValue.getType();
+            assert(iterArgsInitValues.size() == 1 &&
+                   "[Vectorization]: Only Support ForOp with One Iter Args");
+            Value iterArgInitValue = iterArgsInitValues.front();
+            auto newVectorizedTensorTy = iterArgInitValue.getType();
 
-              // 1. Change Input Iter Args Type
-              forArgs[i + 1].setType(newVectorizedTensorTy);
+            // 1. Change Input Iter Args Type
+            forArgs[1].setType(newVectorizedTensorTy);
 
-              // 2. Change Output Type
-              forOp.getResult(i).setType(newVectorizedTensorTy);
-            }
+            // 2. Change Output Type
+            forOp.getResult(0).setType(newVectorizedTensorTy);
           })
           .Case<scf::IfOp>([&](auto ifOp) {
             // 1. Get Terminator Type
@@ -665,18 +587,20 @@ struct TritonXPUVectorizePass
             Block &thenBlock = thenRegion.front();
             Operation *thenTerminator = thenBlock.getTerminator();
 
-            // 2. Change Output Type
+            Type resType;
             if (auto yieldOp = dyn_cast<scf::YieldOp>(thenTerminator)) {
-              for (int i = 0; i < yieldOp.getOperands().size(); ++i) {
-                if (auto prevOp = yieldOp.getOperands()[i].getDefiningOp()) {
-                  auto resType = prevOp->getResult(0).getType();
-                  ifOp.getResult(i).setType(resType);
-                }
+              if (auto prevOp = yieldOp.getOperands().front().getDefiningOp()) {
+                resType = prevOp->getResult(0).getType();
               }
+            } else {
+              resType = thenTerminator->getResult(0).getType();
             }
+
+            // 2. Change Output Type
+            ifOp.getResult(0).setType(resType);
           })
           .Case<scf::YieldOp>([&](auto yieldOp) { (void)yieldOp; })
-          .Case<triton::xpu::ConvertLayoutOp>([&](auto cvtOp) {
+          .Case<triton::gpu::ConvertLayoutOp>([&](auto cvtOp) {
             auto newVectorizedTensorTy =
                 getVectorType(cvtOp.getResult().getType());
             cvtOp.getResult().setType(newVectorizedTensorTy);
@@ -697,38 +621,6 @@ struct TritonXPUVectorizePass
             Type elemTy = getElementTypeOrSelf(getElementTypeOrSelf(rhsTy));
             auto newVectorizedTensorTy = getVectorType(
                 cmpFOp.getResult().getType(), elemTy.getIntOrFloatBitWidth());
-            OpBuilder builder(cmpFOp);
-            auto newCmpFOp = builder.create<triton::xpu::VCmpFOp>(
-                cmpFOp.getLoc(), newVectorizedTensorTy, cmpFOp.getPredicate(),
-                cmpFOp.getLhs(), cmpFOp.getRhs());
-            cmpFOp.replaceAllUsesWith(newCmpFOp.getResult());
-            cmpFOp.erase();
-          })
-          .Case<arith::TruncIOp>([&](auto truncIOp) {
-            auto extElemwiseOp = cast<triton::ExternElementwiseOp>(
-                truncIOp.getIn().getDefiningOp());
-
-            auto newVectorizedTensorTy =
-                getVectorType(truncIOp.getResult().getType(), 32);
-
-            OpBuilder builder(extElemwiseOp);
-
-            auto newExtElemwiseOp = builder.create<triton::ExternElementwiseOp>(
-                extElemwiseOp.getLoc(), newVectorizedTensorTy,
-                extElemwiseOp.getOperands().front(), extElemwiseOp.getLibname(),
-                extElemwiseOp.getLibpath(), "_ZN3xpu6visnanEDv16_f",
-                extElemwiseOp.getPure());
-
-            truncIOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
-            truncIOp.erase();
-            extElemwiseOp.erase();
-          })
-          .Case<triton::xpu::CmpFOp>([&](auto cmpFOp) {
-            auto rhsTy = cmpFOp.getRhs().getType();
-            Type elemTy = getElementTypeOrSelf(getElementTypeOrSelf(rhsTy));
-            auto newVectorizedTensorTy =
-                getVectorType(cmpFOp.getResult().getType(),
-                              elemTy.getIntOrFloatBitWidth(), true);
             OpBuilder builder(cmpFOp);
             auto newCmpFOp = builder.create<triton::xpu::VCmpFOp>(
                 cmpFOp.getLoc(), newVectorizedTensorTy, cmpFOp.getPredicate(),
@@ -768,24 +660,6 @@ struct TritonXPUVectorizePass
                                     newVectorizedTensorTy);
               extElemwiseOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
               extElemwiseOp.erase();
-            } else if (symbol == "_ZN3xpu5isnanEf") {
-              auto inTy = extElemwiseOp.getOperands().front().getType();
-              Type elemTy = getElementTypeOrSelf(getElementTypeOrSelf(inTy));
-              auto newVectorizedTensorTy =
-                  getVectorType(extElemwiseOp.getResult().getType(),
-                                elemTy.getIntOrFloatBitWidth(), true);
-
-              auto newExtElemwiseOp =
-                  createLibdeviceOp(extElemwiseOp, "_ZN3xpu6visnanEDv16_f",
-                                    newVectorizedTensorTy);
-              extElemwiseOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
-              extElemwiseOp.erase();
-            } else if (symbol == "_ZN3xpu6rsqrtfEf") {
-              auto newExtElemwiseOp = createLibdeviceOp(
-                  extElemwiseOp, "_ZN3xpu12vrsqrtf_fastEDv16_f",
-                  newVectorizedTensorTy);
-              extElemwiseOp.replaceAllUsesWith(newExtElemwiseOp.getResult());
-              extElemwiseOp.erase();
             } else {
               LLVM_DEBUG(llvm::dbgs()
                          << "[Vectorization]: Can not Convert Symbol " << symbol
@@ -802,7 +676,7 @@ struct TritonXPUVectorizePass
 
   bool inline vectorizedTyValid(Type elemTy) {
     if (elemTy.isF16() || elemTy.isF32() || elemTy.isBF16() ||
-        elemTy.isInteger(8) || elemTy.isInteger(16) || elemTy.isInteger(32))
+        elemTy.isInteger(16) || elemTy.isInteger(32))
       return true;
     return false;
   }
@@ -847,7 +721,7 @@ struct TritonXPUVectorizePass
     processOpVecTy(vectorizedOps, mod);
   }
 
-  void doMaximumFusion(arith::SelectOp selectOp) {
+  void maximumFusion(arith::SelectOp selectOp) {
     if (auto orIOp = selectOp.getCondition().getDefiningOp<arith::OrIOp>()) {
       if (orIOp.getResult().hasOneUse()) {
         auto lhs = orIOp.getLhs().getDefiningOp<arith::CmpFOp>();
@@ -895,168 +769,6 @@ struct TritonXPUVectorizePass
     }
   }
 
-  // void doCompareCastI8Fusion(arith::ExtUIOp extUIOp) {
-  //   if (auto cmpFOp = extUIOp.getIn().getDefiningOp<arith::CmpFOp>()) {
-  //     // Only Vectorize Do Fusion
-  //     auto rowsPerCore = 1;
-  //     auto inputTy = cmpFOp.getLhs().getType();
-  //     if (auto inputTensorTy = mlir::dyn_cast<RankedTensorType>(inputTy)) {
-  //       auto rank = inputTensorTy.getShape().size();
-  //       if (rank > 1) {
-  //         rowsPerCore = mlir::cast<triton::xpu::ClusterLayoutAttr>(
-  //                           inputTensorTy.getEncoding())
-  //                           .getSizePerCore()[0];
-  //       }
-  //     }
-  //     unsigned numElems = getTotalElemsPerThread(inputTy) / rowsPerCore;
-  //     Type vecTy = getElementTypeOrSelf(inputTy);
-  //     Type elemTy = getElementTypeOrSelf(vecTy);
-  //     auto elemWidth = elemTy.getIntOrFloatBitWidth();
-  //     auto vectorWidth = 512 / elemWidth;
-  //     if (numElems < vectorWidth || numElems % vectorWidth > 0 ||
-  //         !vectorizedTyValid(elemTy))
-  //       return;
-  //     // Fuse CmpFOp + ExtUIOp
-  //     if (cmpFOp.getResult().hasOneUse()) {
-  //       auto resTy = extUIOp.getOut().getType();
-  //       OpBuilder builder(cmpFOp);
-  //       auto newCmpFOp = builder.create<triton::xpu::CmpFCastOp>(
-  //           cmpFOp.getLoc(), extUIOp.getType(), cmpFOp.getPredicate(),
-  //           cmpFOp.getLhs(), cmpFOp.getRhs());
-  //       extUIOp.replaceAllUsesWith(newCmpFOp.getResult());
-  //       extUIOp.erase();
-  //       cmpFOp->erase();
-  //     }
-  //   }
-  // }
-
-  void doCompareExtUI8Fusion(arith::ExtUIOp extUIOp) {
-    auto inTy = extUIOp.getIn().getType();
-    auto outTy = extUIOp.getOut().getType();
-    auto inElemTy = getElementTypeOrSelf(inTy);
-    auto outElemTy = getElementTypeOrSelf(outTy);
-    // Only Vectorize Do Fusion
-    auto rowsPerCore = 1;
-    if (auto outTensorTy = mlir::dyn_cast<RankedTensorType>(outTy)) {
-      auto rank = outTensorTy.getShape().size();
-      if (rank > 1) {
-        rowsPerCore = mlir::cast<triton::xpu::ClusterLayoutAttr>(
-                          outTensorTy.getEncoding())
-                          .getSizePerCore()[0];
-      }
-    }
-    unsigned numElems = getTotalElemsPerThread(outTy) / rowsPerCore;
-    Type elemTy = getElementTypeOrSelf(outTy);
-    auto elemWidth = elemTy.getIntOrFloatBitWidth();
-    auto vectorWidth = 512 / elemWidth;
-    if (numElems < vectorWidth || numElems % vectorWidth > 0 ||
-        !vectorizedTyValid(elemTy))
-      return;
-    // Fuse CmpFOp(i1) + ExtUIOp(i8) + StoreOp = CmpFOp(i32) + StoreOp
-    if (auto cmpFOp = extUIOp.getIn().getDefiningOp<arith::CmpFOp>()) {
-      if (inElemTy.isInteger(1) && outElemTy.isInteger(8)) {
-        for (auto user : extUIOp.getOut().getUsers()) {
-          if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
-            if (auto outTensorTy = dyn_cast<RankedTensorType>(outTy)) {
-              auto lhsTy = cmpFOp.getLhs().getType();
-              auto lhsElemTy =
-                  getElementTypeOrSelf(getElementTypeOrSelf(lhsTy));
-              auto context = storeOp.getContext();
-              if (lhsElemTy.isF32()) {
-                auto dtype = DtypeAttr::get(context, Dtype::FP32);
-                storeOp->setAttr("dtype", dtype);
-              } else if (lhsElemTy.isF16()) {
-                auto dtype = DtypeAttr::get(context, Dtype::FP16);
-                storeOp->setAttr("dtype", dtype);
-              } else {
-                llvm_unreachable(
-                    "CompareExtUI8Fusion only supports FP32 or FP16");
-              }
-              OpBuilder builder(extUIOp);
-              auto newTensorTy = RankedTensorType::get(
-                  outTensorTy.getShape(), builder.getIntegerType(32, false),
-                  outTensorTy.getEncoding());
-              auto newCmpFOp = builder.create<triton::xpu::CmpFOp>(
-                  extUIOp.getLoc(), newTensorTy, cmpFOp.getPredicate(),
-                  cmpFOp.getLhs(), cmpFOp.getRhs());
-              extUIOp.getOut().replaceAllUsesWith(newCmpFOp.getResult());
-              extUIOp.erase();
-              cmpFOp.erase();
-              BF16ToFP32VecOpt = false;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  void doCompareTruncI8Fusion(arith::TruncIOp truncIOp) {
-    auto inTy = truncIOp.getIn().getType();
-    auto outTy = truncIOp.getOut().getType();
-    auto inElemTy = getElementTypeOrSelf(inTy);
-    auto outElemTy = getElementTypeOrSelf(outTy);
-    // Only Vectorize Do Fusion
-    auto rowsPerCore = 1;
-    if (auto outTensorTy = mlir::dyn_cast<RankedTensorType>(outTy)) {
-      auto rank = outTensorTy.getShape().size();
-      if (rank > 1) {
-        rowsPerCore = mlir::cast<triton::xpu::ClusterLayoutAttr>(
-                          outTensorTy.getEncoding())
-                          .getSizePerCore()[0];
-      }
-    }
-    unsigned numElems = getTotalElemsPerThread(outTy) / rowsPerCore;
-    Type elemTy = getElementTypeOrSelf(outTy);
-    auto elemWidth = elemTy.getIntOrFloatBitWidth();
-    auto vectorWidth = 512 / elemWidth;
-    if (numElems < vectorWidth || numElems % vectorWidth > 0 ||
-        !vectorizedTyValid(elemTy))
-      return;
-    // Fuse ExtElemwiseOp(i8) + TruncIOp(i8) + StoreOp = newExtElemwiseOp(i32) +
-    // StoreOp
-    if (auto extElemwiseOp =
-            truncIOp.getIn().getDefiningOp<triton::ExternElementwiseOp>()) {
-      if (extElemwiseOp.getSymbol() == "_ZN3xpu5isnanEf" &&
-          inElemTy.isInteger(32) && outElemTy.isInteger(8)) {
-        for (auto user : truncIOp.getOut().getUsers()) {
-          if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(user)) {
-            if (auto outTensorTy = dyn_cast<RankedTensorType>(outTy)) {
-              auto inTy = extElemwiseOp.getOperands().front().getType();
-              auto inElemTy = getElementTypeOrSelf(getElementTypeOrSelf(inTy));
-              auto context = storeOp.getContext();
-              if (inElemTy.isF32()) {
-                auto dtype = DtypeAttr::get(context, Dtype::FP32);
-                storeOp->setAttr("dtype", dtype);
-              } else if (inElemTy.isF16()) {
-                auto dtype = DtypeAttr::get(context, Dtype::FP16);
-                storeOp->setAttr("dtype", dtype);
-              } else {
-                llvm_unreachable(
-                    "CompareExtUI8Fusion only supports FP32 or FP16");
-              }
-              OpBuilder builder(truncIOp);
-              auto newTensorTy = RankedTensorType::get(
-                  outTensorTy.getShape(), builder.getIntegerType(32),
-                  outTensorTy.getEncoding());
-              auto newExtElemwiseOp =
-                  builder.create<triton::ExternElementwiseOp>(
-                      truncIOp.getLoc(), newTensorTy,
-                      extElemwiseOp.getOperands().front(),
-                      extElemwiseOp.getLibname(), extElemwiseOp.getLibpath(),
-                      extElemwiseOp.getSymbol(), extElemwiseOp.getPure());
-
-              truncIOp.getOut().replaceAllUsesWith(
-                  newExtElemwiseOp.getResult());
-              truncIOp.erase();
-              extElemwiseOp.erase();
-              BF16ToFP32VecOpt = false;
-            }
-          }
-        }
-      }
-    }
-  }
-
   bool isLoadVectorized(triton::xpu::LoadOp loadOp) {
     Type resTy = loadOp.getType();
     Type resElemTy = getElementTypeOrSelf(resTy);
@@ -1071,70 +783,32 @@ struct TritonXPUVectorizePass
 
     TypeSwitch<const Operation *>(op)
         .Case<triton::xpu::LoadOp>([&](auto loadOp) {
-          if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMOp>(
-                  loadOp.getPtr().getDefiningOp())) {
-            OffsetState offsetState =
-                static_cast<OffsetState>(gm2lmOp.getOffsetState());
-            if (offsetState == OffsetState::DiscreteSame &&
-                isLoadVectorized(loadOp))
-              canSVOpt = true;
-          } else if (auto gm2lmOp = dyn_cast<triton::xpu::GM2LMMaskOp>(
-                         loadOp.getPtr().getDefiningOp())) {
-            OffsetState offsetState =
-                static_cast<OffsetState>(gm2lmOp.getOffsetState());
-            if (offsetState == OffsetState::DiscreteSame &&
-                isLoadVectorized(loadOp))
-              canSVOpt = true;
-          }
+          auto gm2lmOp = cast<triton::xpu::GM2LMOp>(loadOp->getPrevNode());
+          OffsetState offsetState =
+              static_cast<OffsetState>(gm2lmOp.getOffsetState());
+          if (offsetState == OffsetState::DiscreteSame &&
+              isLoadVectorized(loadOp))
+            canSVOpt = true;
         })
         .Case<triton::xpu::BroadcastOp>([&](auto bcOp) {
           auto src = bcOp.getSrc();
           if (auto srcTy = mlir::dyn_cast<RankedTensorType>(src.getType())) {
             auto srcShape = srcTy.getShape();
-            if (srcShape.size() == 2 && srcShape[1] == 1) {
+            if (srcShape.size() == 2 && srcShape[0] == 64 && srcShape[1] == 1) {
               canSVOpt = true;
             }
           }
         })
         .Case<triton::xpu::VConstOp>([&](auto vConstOp) { canSVOpt = true; })
-        .Case<triton::xpu::ConvertLayoutOp>([&](auto convertOp) {
-          auto srcDefOp = convertOp.getSrc().getDefiningOp();
-          canSVOpt = SVOptimization_Cond(srcDefOp);
-        })
         .Default([&](auto &op) { canSVOpt = false; });
 
     return canSVOpt;
   }
 
-  void getUsers(SetVector<Operation *> &users, Operation *op) {
-    SetVector<Operation *> visited;
-    SmallVector<Operation *> worklist = {op};
-
-    while (!worklist.empty()) {
-      Operation *currentOp = worklist.pop_back_val();
-      for (Operation *userOp : currentOp->getUsers()) {
-        if (visited.contains(userOp))
-          continue;
-        visited.insert(userOp);
-
-        if (isa<triton::xpu::ConvertLayoutOp>(userOp)) {
-          worklist.push_back(userOp);
-        } else {
-          users.insert(userOp);
-        }
-      }
-    }
-  }
-
   bool collectVUser(Operation *op, DenseMap<Operation *, ElemState> &vBinOps) {
     // To check if the collection was successful.
     bool canSVOpt = true;
-    SetVector<Operation *> users;
-    getUsers(users, op);
-    if (users.empty()) {
-      canSVOpt = false;
-    }
-    for (auto user : users) {
+    for (auto user : op->getUsers()) {
       TypeSwitch<const Operation *>(user)
           .Case<XPU_VVECTORIZED_BINARY_OP>([&](auto vBinOp) {
             auto lDefineOp =
@@ -1180,7 +854,8 @@ struct TritonXPUVectorizePass
     std::vector<unsigned> sizePerCore = {1}; // 1 for scalar
     Attribute newEncoding = triton::xpu::ClusterLayoutAttr::get(
         encoding.getContext(), sizePerCore, encoding.getCoresPerGroup(),
-        encoding.getGroupsPerCluster(), encoding.getOrder());
+        encoding.getGroupsPerCluster(), encoding.getOrder(),
+        encoding.getIsReduceOpt());
 
     Type newTensorType = RankedTensorType::get(
         ceil<unsigned>(vecNums, numElems), elemTy, newEncoding);
@@ -1194,50 +869,27 @@ struct TritonXPUVectorizePass
   // To check if the SVOptimization(Own) was successful.
   void SVOptimization_Modify(triton::xpu::BroadcastOp vBCOp) {
     auto src = vBCOp.getSrc();
-    SetVector<Operation *> users;
-    getUsers(users, vBCOp);
-    for (auto user : users) {
-      for (auto operand : user->getOperands()) {
-        auto defOp = operand.getDefiningOp();
-        if (isa<triton::xpu::ConvertLayoutOp, triton::xpu::BroadcastOp>(
-                defOp) &&
-            operand != src) {
-          operand.replaceAllUsesWith(src);
-        }
-      }
-    }
+    vBCOp.replaceAllUsesWith(src);
+    vBCOp.erase();
   }
 
   // To check if the SVOptimization(Own) was successful.
   void SVOptimization_Modify(triton::xpu::VConstOp vConstOp) {
     auto res = vConstOp.getResult();
     auto resTy = mlir::cast<RankedTensorType>(res.getType());
-    auto resShape = resTy.getShape();
     triton::xpu::ClusterLayoutAttr vConstOpEncoding =
         mlir::cast<triton::xpu::ClusterLayoutAttr>(resTy.getEncoding());
-    auto order = vConstOpEncoding.getOrder();
-    auto groupsPerCluster = vConstOpEncoding.getGroupsPerCluster();
-    auto CoresPerGroup = vConstOpEncoding.getCoresPerGroup();
-    auto sizePerCore = vConstOpEncoding.getSizePerCore();
-    auto groupSize = product(CoresPerGroup);
-    auto nGroup = product(groupsPerCluster);
-    auto nCore = groupSize * nGroup;
     unsigned rank = resTy.getRank();
 
     auto elemTy = getElementTypeOrSelf(vConstOp.getType());
     auto _elemTy = getElementTypeOrSelf(elemTy);
     RankedTensorType newSrcTy;
     if (rank == 1) {
-      auto newEncoding = triton::xpu::ClusterLayoutAttr::get(
-          context, {1}, CoresPerGroup, groupsPerCluster, order);
-      newSrcTy = RankedTensorType::get({nCore}, _elemTy, newEncoding);
-    } else if (rank == 2) {
-      unsigned newSizePerCore =
-          ceil(resShape.front(), static_cast<int64_t>(nCore));
-      auto newEncoding = triton::xpu::ClusterLayoutAttr::get(
-          context, {newSizePerCore, 1}, CoresPerGroup, groupsPerCluster, order);
       newSrcTy =
-          RankedTensorType::get({resShape.front(), 1}, _elemTy, newEncoding);
+          RankedTensorType::get({/*core_num=*/64}, _elemTy, vConstOpEncoding);
+    } else if (rank == 2) {
+      newSrcTy = RankedTensorType::get({/*core_num=*/64, 1}, _elemTy,
+                                       vConstOpEncoding);
     } else {
       llvm_unreachable("Got Unsupport Rank");
     }
@@ -1313,7 +965,7 @@ struct TritonXPUVectorizePass
 
   // Simpify Mod Graph
   // TODO[dyq]: use canonicalizer
-  void cvtOpclean(triton::xpu::ConvertLayoutOp cvtOp) {
+  void cvtOpclean(triton::gpu::ConvertLayoutOp cvtOp) {
     auto src = cvtOp.getSrc();
     auto res = cvtOp.getResult();
 
@@ -1448,24 +1100,14 @@ struct TritonXPUVectorizePass
   }
 
   void runOnOperation() override {
-    context = &getContext();
+    MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
 
     // Maximum Fusion Online
     // [cmpf, cmpf, ori, select] -> [fmax]
-    if (maximumFusion) {
-      mod.walk([&](arith::SelectOp selectOp) { doMaximumFusion(selectOp); });
+    if (Maximum_Fusion) {
+      mod.walk([&](arith::SelectOp selectOp) { maximumFusion(selectOp); });
     }
-
-    // Compare Fusion
-    // [cmpf, extui] -> [vcmpf(castToI8=True)]
-    if (this->compareFusion) {
-      mod.walk([&](arith::ExtUIOp extUIOp) { doCompareExtUI8Fusion(extUIOp); });
-    }
-    mod.walk(
-        [&](arith::TruncIOp truncIOp) { doCompareTruncI8Fusion(truncIOp); });
-    // llvm::errs() << "After doCompareTruncI8Fusion:\n";
-    // mod.dump();
 
     // Eliminate SelectOp For bufferSize X Col Size
     // TODO[dyq]: open isMultipleOfBank
@@ -1515,7 +1157,6 @@ struct TritonXPUVectorizePass
                   srcClusterEncoding);
               auto newResTy = RankedTensorType::get(
                   resTy.getShape(), resTy.getElementType(), newEncoding);
-
               redRes.setType(newResTy);
             }
           }
@@ -1564,7 +1205,7 @@ struct TritonXPUVectorizePass
 
     // Eliminate CvtOp in VVOp Path
     if (cvtOp_clean) {
-      mod.walk([&](triton::xpu::ConvertLayoutOp cvtOp) { cvtOpclean(cvtOp); });
+      mod.walk([&](triton::gpu::ConvertLayoutOp cvtOp) { cvtOpclean(cvtOp); });
     }
 
     // Div -> Mul
@@ -1620,12 +1261,11 @@ struct TritonXPUVectorizePass
   }
 
 private:
-  MLIRContext *context;
   llvm::SetVector<triton::xpu::VvmulFOp> vvmulFOps;
   llvm::SetVector<triton::xpu::BroadcastOp> vectorizedBcOps;
   llvm::SetVector<triton::xpu::LoadOp> vectorizedLoadOps;
   llvm::SetVector<triton::xpu::VConstOp> vectorizedConstOps;
-  bool maximumFusion = true;
+  bool Maximum_Fusion = true;
   bool SV_Fusion = true;
   bool VMAC_Fusion = true;
   bool cvtOp_clean = true;

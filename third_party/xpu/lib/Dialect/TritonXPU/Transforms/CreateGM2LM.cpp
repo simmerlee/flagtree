@@ -7,7 +7,6 @@
 // TODO[dyq]: Pass Description
 //===----------------------------------------------------------------------===//
 
-#include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Dialect/TritonXPU/Transforms/Passes.h"
 
@@ -32,8 +31,7 @@ bool replaceAtomicOp(mlir::ModuleOp m) {
     RMWOp atomic_rmw_op = atomicRMWOp.getAtomicRmwOp();
     auto dtype = val.getType();
     auto loadOp = builder.create<triton::xpu::LoadOp>(
-        loc, dtype, ptr, mask, Value(), Value(), 1, -1, false, false, false,
-        MemorySyncMode::SYNC);
+        loc, dtype, ptr, mask, Value(), Value(), 1, -1, false, false, false);
 
     Operation *arithOp;
     switch (atomic_rmw_op) {
@@ -77,22 +75,13 @@ bool replaceAtomicOp(mlir::ModuleOp m) {
       assert(0 && "The RMWOp::XCHG is not supported in RMWOp");
       break;
     }
-    case RMWOp::MUL: {
-      arithOp = builder.create<arith::MulIOp>(loc, loadOp.getResult(), val);
-      break;
-    }
-    case RMWOp::FMUL: {
-      arithOp = builder.create<arith::MulFOp>(loc, loadOp.getResult(), val);
-      break;
-    }
     default: {
       assert(0 && "The atomic_rmw_op only could be 1-10 in RMWOp");
     }
     }
 
     auto storeOp = builder.create<triton::xpu::StoreOp>(
-        loc, ptr, arithOp->getResults()[0], mask, Value(), -1, false,
-        Dtype::UNKNOWN, MemorySyncMode::SYNC);
+        loc, ptr, arithOp->getResults()[0], mask, Value(), -1, false);
     atomicRMWOp.erase();
   });
 
@@ -106,6 +95,7 @@ Attribute getOneCoreGEncoding(Operation *op, ArrayRef<int64_t> shape) {
   llvm::SmallVector<unsigned> coresPerGroup;
   llvm::SmallVector<unsigned> groupsPerCluster;
   llvm::SmallVector<unsigned> order;
+  bool isReduceOpt = false;
 
   if (rank == 1) {
     sizePerBank = {static_cast<unsigned>(shape[0])};
@@ -122,7 +112,8 @@ Attribute getOneCoreGEncoding(Operation *op, ArrayRef<int64_t> shape) {
   }
 
   newEncoding = triton::xpu::ClusterLayoutAttr::get(
-      op->getContext(), sizePerBank, coresPerGroup, groupsPerCluster, order);
+      op->getContext(), sizePerBank, coresPerGroup, groupsPerCluster, order,
+      isReduceOpt);
   return newEncoding;
 }
 
@@ -255,208 +246,28 @@ bool atomicSimulation(mlir::ModuleOp m) {
     // Step 3.4. ReduceOp: it reduces the data dimension, so its correct
     // encoding should be inferd by its input type.
     m.walk([&](triton::ReduceOp redOp) {
-      assert(redOp->getNumResults() == redOp->getNumOperands());
-      for (int i = 0; i < redOp->getNumResults(); ++i) {
-        if (dyn_cast<RankedTensorType>(redOp.getType(i))) {
-          auto resTy = mlir::cast<RankedTensorType>(redOp.getType(i));
-          auto srcTy =
-              mlir::cast<RankedTensorType>(redOp.getOperand(i).getType());
+      llvm_unreachable("TODO[dyq]: new reduceOp has multi operands and "
+                       "results, we need to modify all Tys");
+      auto resTy = mlir::cast<RankedTensorType>(redOp.getType(0));
+      auto srcTy = mlir::cast<RankedTensorType>(redOp.getOperand(0).getType());
 
-          auto resSliceEncoding =
-              mlir::cast<triton::gpu::SliceEncodingAttr>(resTy.getEncoding());
-          auto srcGlobalEncoding =
-              mlir::cast<triton::xpu::ClusterLayoutAttr>(srcTy.getEncoding());
+      auto resSliceEncoding =
+          mlir::cast<triton::gpu::SliceEncodingAttr>(resTy.getEncoding());
+      auto srcGlobalEncoding =
+          mlir::cast<triton::xpu::ClusterLayoutAttr>(srcTy.getEncoding());
 
-          auto newEncoding = triton::gpu::SliceEncodingAttr::get(
-              redOp.getContext(), resSliceEncoding.getDim(), srcGlobalEncoding);
-          auto newResTy = RankedTensorType::get(
-              resTy.getShape(), resTy.getElementType(), newEncoding);
+      auto newEncoding = triton::gpu::SliceEncodingAttr::get(
+          redOp.getContext(), resSliceEncoding.getDim(), srcGlobalEncoding);
+      auto newResTy = RankedTensorType::get(
+          resTy.getShape(), resTy.getElementType(), newEncoding);
 
-          redOp->getResult(i).setType(newResTy);
-        }
-      }
+      redOp->getResult(0).setType(newResTy);
     });
 
     return true;
   }
 
   return false;
-}
-
-Attribute getOneCoreAllDealGEncoding(Operation *op, ArrayRef<int64_t> shape) {
-  Attribute newEncoding;
-  unsigned rank = shape.size();
-  llvm::SmallVector<unsigned> sizePerBank;
-  llvm::SmallVector<unsigned> coresPerGroup;
-  llvm::SmallVector<unsigned> groupsPerCluster;
-  llvm::SmallVector<unsigned> order;
-
-  if (rank == 1) {
-    sizePerBank = {static_cast<unsigned>(shape[0])};
-    coresPerGroup = {1};
-    groupsPerCluster = {1};
-    order = {0};
-  } else if (rank == 2) {
-    sizePerBank = {1, static_cast<unsigned>(shape[1])};
-    coresPerGroup = {1, 1};
-    groupsPerCluster = {1, 1};
-    order = {0, 1};
-  } else {
-    llvm_unreachable("Rank > 2 Unsupported");
-  }
-
-  newEncoding = triton::xpu::ClusterLayoutAttr::get(
-      op->getContext(), sizePerBank, coresPerGroup, groupsPerCluster, order);
-  return newEncoding;
-}
-
-void oneCoreCalculationEncodingSet(mlir::ModuleOp m) {
-
-  // Step 1. Modify All Op Encoding
-  m.walk([&](mlir::Operation *op) {
-    auto opResult = op->getResults();
-    if (opResult.size() == 1) { // SSA Assert
-      // Only TensorType Has Encoding
-      if (auto resTy =
-              mlir::dyn_cast<RankedTensorType>(opResult[0].getType())) {
-        auto shape = resTy.getShape();
-        auto elemTy = resTy.getElementType();
-        auto encoding = resTy.getEncoding();
-        Attribute newEncoding; // newEncoding
-
-        auto globalEncoding =
-            mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(encoding);
-        auto sliceEncoding =
-            mlir::dyn_cast<triton::gpu::SliceEncodingAttr>(encoding);
-
-        if (globalEncoding) {
-          newEncoding = getOneCoreAllDealGEncoding(op, shape);
-        } else if (sliceEncoding) {
-          // must be globalEncoding
-          auto parentEncoding = mlir::dyn_cast<triton::xpu::ClusterLayoutAttr>(
-              sliceEncoding.getParent());
-
-          if (parentEncoding) {
-            auto newParentEncoding = getOneCoreGEncoding(op, shape);
-            newEncoding = triton::gpu::SliceEncodingAttr::get(
-                op->getContext(), sliceEncoding.getDim(), newParentEncoding);
-          } else {
-            llvm_unreachable("Unsupported SliceEncoding's Parent Attribute");
-          }
-        } else {
-          llvm_unreachable("Unsupported Encoding Attribute");
-        }
-
-        auto newResTy = RankedTensorType::get(shape, elemTy, newEncoding);
-        opResult[0].setType(newResTy);
-      }
-    }
-  });
-
-  // Step 3. Special Modification For [constOp]
-  // Step 3.1. ConstOp: value's encoding is not modified before this walk
-  m.walk([&](arith::ConstantOp constOp) {
-    auto newValue = constOp.getValue();
-    if (auto attr =
-            mlir::dyn_cast<mlir::DenseElementsAttr>(constOp.getValue())) {
-      newValue = DenseElementsAttr::getFromRawBuffer(
-          mlir::cast<ShapedType>(constOp.getType()), attr.getRawData());
-    }
-    OpBuilder builder(constOp);
-    auto loc = constOp.getLoc();
-    auto newConstOp = builder.create<mlir::arith::ConstantOp>(
-        loc, constOp.getType(), newValue);
-    constOp.replaceAllUsesWith(newConstOp.getResult());
-    constOp.erase();
-  });
-
-  // Step 3.2. ExpandDimsOp: it expands the data dimension, so its prev
-  // cvtOp's correct encoding should be inferd by its operand. cvtOp is
-  // actually generated after expandDimsOp, so we need to modify the
-  // encoding of the previous cvtOp after determining the shape of
-  // expandDimsOp.
-  m.walk([&](triton::ExpandDimsOp expandOp) {
-    auto expandOpType = mlir::cast<RankedTensorType>(expandOp.getType());
-    auto globalEncoding =
-        mlir::cast<triton::xpu::ClusterLayoutAttr>(expandOpType.getEncoding());
-
-    if (auto cvtOp =
-            expandOp.getSrc().getDefiningOp<triton::xpu::ConvertLayoutOp>()) {
-      auto cvtOpType = mlir::cast<RankedTensorType>(cvtOp.getType());
-      auto sliceEncoding =
-          mlir::cast<triton::gpu::SliceEncodingAttr>(cvtOpType.getEncoding());
-
-      auto newSliceEncoding = triton::gpu::SliceEncodingAttr::get(
-          expandOp->getContext(), sliceEncoding.getDim(), globalEncoding);
-      auto newResTy = RankedTensorType::get(
-          cvtOpType.getShape(), cvtOpType.getElementType(), newSliceEncoding);
-
-      cvtOp->getResult(0).setType(newResTy);
-    } else {
-      llvm_unreachable("ExpandDimsOp With Error Operand");
-    }
-  });
-
-  // Step 3.3. ForOp: we need to modify forOp's argTy, args can't be
-  m.walk([&](scf::ForOp forOp) {
-    auto forBody = forOp.getBody();
-    // modify forOp's argTy
-    auto forArgs = forBody->getArguments();
-    for (auto forArg : forArgs) {
-      if (auto argTy = mlir::dyn_cast<RankedTensorType>(forArg.getType())) {
-        auto shape = argTy.getShape();
-        auto elemTy = argTy.getElementType();
-        auto argEncoding =
-            mlir::cast<triton::xpu::ClusterLayoutAttr>(argTy.getEncoding());
-
-        auto newArgEncoding = getOneCoreGEncoding(forOp, shape);
-        auto newArgTy = RankedTensorType::get(shape, elemTy, newArgEncoding);
-
-        forArg.setType(newArgTy);
-      }
-    }
-
-    // modify forOp's resTy
-    auto forResults = forOp->getResults();
-    for (auto forRes : forResults) {
-      if (auto argTy = mlir::dyn_cast<RankedTensorType>(forRes.getType())) {
-        auto shape = argTy.getShape();
-        auto elemTy = argTy.getElementType();
-        auto argEncoding =
-            mlir::cast<triton::xpu::ClusterLayoutAttr>(argTy.getEncoding());
-
-        auto newArgEncoding = getOneCoreGEncoding(forOp, shape);
-        auto newArgTy = RankedTensorType::get(shape, elemTy, newArgEncoding);
-
-        forRes.setType(newArgTy);
-      }
-    }
-  });
-
-  // Step 3.4. ReduceOp: it reduces the data dimension, so its correct
-  // encoding should be inferd by its input type.
-  m.walk([&](triton::ReduceOp redOp) {
-    assert(redOp->getNumResults() == redOp->getNumOperands());
-    for (int i = 0; i < redOp->getNumResults(); ++i) {
-      if (dyn_cast<RankedTensorType>(redOp.getType(i))) {
-        auto resTy = mlir::cast<RankedTensorType>(redOp.getType(i));
-        auto srcTy =
-            mlir::cast<RankedTensorType>(redOp.getOperand(i).getType());
-
-        auto resSliceEncoding =
-            mlir::cast<triton::gpu::SliceEncodingAttr>(resTy.getEncoding());
-        auto srcGlobalEncoding =
-            mlir::cast<triton::xpu::ClusterLayoutAttr>(srcTy.getEncoding());
-
-        auto newEncoding = triton::gpu::SliceEncodingAttr::get(
-            redOp.getContext(), resSliceEncoding.getDim(), srcGlobalEncoding);
-        auto newResTy = RankedTensorType::get(
-            resTy.getShape(), resTy.getElementType(), newEncoding);
-
-        redOp->getResult(i).setType(newResTy);
-      }
-    }
-  });
 }
 
 struct TritonXPUCreateGM2LMPass
@@ -471,132 +282,65 @@ struct TritonXPUCreateGM2LMPass
 
     // Replace AtomicRMWOp with GM2LMOp + Arith.xxx + LM2GMOp(Embedding
     // Backward)
-    if (oneCoreActOnly)
-      oneCoreCalculationEncodingSet(m);
-
     if (atomicSim)
       hasAtomicSim = atomicSimulation(m);
 
     llvm::SmallSetVector<Operation *, 4> opToErase;
     Value emptyBufPtr;
-    Value emptyLen;
 
     // FIXME: Sometimes (test_core.py::test_bin_op_constexpr)
     // `triton::LoadOp` and `triton::StoreOp` can not be replaced
     // with `triton::xpu::LoadOp` and `triton::xpu::StoreOp` in
     // TritonToTritonXPUPass, So we workaround to replace it here.
-    DenseMap<Operation *, int> offsetStateMap;
     m.walk([&](triton::LoadOp loadOp) {
       auto loc = loadOp.getLoc();
       OpBuilder builder(loadOp);
       auto newLoadOp = builder.create<triton::xpu::LoadOp>(
           loc, loadOp.getType(), loadOp.getPtr(), loadOp.getMask(),
-          loadOp.getOther(), Value(), 1, -1, false, false, false,
-          loadOp.getSyncMode());
+          loadOp.getOther(), Value(), 1, -1, false, false, false);
       loadOp.replaceAllUsesWith(newLoadOp.getResult());
       opToErase.insert(loadOp);
-      offsetStateMap[newLoadOp] =
-          static_cast<int32_t>(loadOp.getOffsetState()) -
-          2; // Gap of triton::EvictionPolicy and OffsetState is -2
     });
 
     m.walk([&](triton::StoreOp storeOp) {
       auto loc = storeOp.getLoc();
       OpBuilder builder(storeOp);
-      auto newStoreOp = builder.create<triton::xpu::StoreOp>(
+      auto newLoadOp = builder.create<triton::xpu::StoreOp>(
           loc, storeOp.getPtr(), storeOp.getValue(), storeOp.getMask(), Value(),
-          -1, false, Dtype::UNKNOWN, storeOp.getSyncMode());
+          -1, false);
       opToErase.insert(storeOp);
-      offsetStateMap[newStoreOp] =
-          static_cast<int32_t>(storeOp.getOffsetState()) -
-          2; // Gap of triton::EvictionPolicy and OffsetState is -2
     });
 
     m.walk([&](triton::xpu::LoadOp loadOp) {
       OpBuilder builder(loadOp);
       auto loc = loadOp.getLoc();
       auto lmPtrType = addrspaceCast(loadOp.getPtr().getType(), 0);
-      bool handwrittenOffsetState = offsetStateMap[loadOp] != -2;
-      int offsetState = handwrittenOffsetState
-                            ? offsetStateMap[loadOp]
-                            : static_cast<int32_t>(OffsetState::Unknown);
       if (xpuArch == 2) {
         if (loadOp.getResult().hasOneUse()) {
           if (auto extFOp = dyn_cast<arith::ExtFOp>(*(loadOp->user_begin()))) {
-            if (this->isUseMaskZero) {
-              auto gm2lmOp = builder.create<triton::xpu::GM2LMMaskOp>(
-                  loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-                  loadOp.getOther(), emptyLen, emptyBufPtr, offsetState, -1, -1,
-                  -1, -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
-                  handwrittenOffsetState);
-              loadOp.setOperand(0, gm2lmOp.getResult());
-              loadOp.getResult().setType(extFOp.getType());
-              extFOp.getResult().replaceAllUsesWith(loadOp.getResult());
-              opToErase.insert(extFOp);
-              // Remove Mask in loadOp
-              if (loadOp.getMask()) {
-                auto operandSegmentSizesAttr =
-                    loadOp->getAttrOfType<DenseI32ArrayAttr>(
-                        "operandSegmentSizes");
-                SmallVector<int, 4> operandSegmentSizes(
-                    operandSegmentSizesAttr.asArrayRef());
-                --operandSegmentSizes[1]; // 0: ptr, 1: mask, 2: other
-                loadOp->setAttr(
-                    "operandSegmentSizes",
-                    builder.getDenseI32ArrayAttr(operandSegmentSizes));
-                loadOp->eraseOperands(1);
-              }
-            } else {
-              auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
-                  loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-                  loadOp.getOther(), emptyBufPtr, offsetState, -1, -1, -1, -1,
-                  -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
-                  handwrittenOffsetState);
-              loadOp.setOperand(0, gm2lmOp.getResult());
-              loadOp.getResult().setType(extFOp.getType());
-              extFOp.getResult().replaceAllUsesWith(loadOp.getResult());
-              opToErase.insert(extFOp);
-            }
+            auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
+                loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(), emptyBufPtr,
+                static_cast<int32_t>(OffsetState::Unknown), -1, -1, -1, -1, -1,
+                false, false, hasAtomicSim);
+            loadOp.setOperand(0, gm2lmOp.getResult());
+            loadOp.getResult().setType(extFOp.getType());
+            extFOp.getResult().replaceAllUsesWith(loadOp.getResult());
+            opToErase.insert(extFOp);
             return;
           }
         }
       }
-      if (this->isUseMaskZero) {
-        auto gm2lmOp = builder.create<triton::xpu::GM2LMMaskOp>(
-            loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-            loadOp.getOther(), emptyLen, emptyBufPtr, offsetState, -1, -1, -1,
-            -1, -1, false, loadOp.getSyncMode(), hasAtomicSim, false,
-            handwrittenOffsetState);
-        loadOp.setOperand(0, gm2lmOp.getResult());
-        // Remove Mask in loadOp
-        if (loadOp.getMask()) {
-          auto operandSegmentSizesAttr =
-              loadOp->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
-          SmallVector<int, 4> operandSegmentSizes(
-              operandSegmentSizesAttr.asArrayRef());
-          --operandSegmentSizes[1]; // 0: ptr, 1: mask, 2: other
-          loadOp->setAttr("operandSegmentSizes",
-                          builder.getDenseI32ArrayAttr(operandSegmentSizes));
-          loadOp->eraseOperands(1);
-        }
-      } else {
-        auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
-            loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(),
-            loadOp.getOther(), emptyBufPtr, offsetState, -1, -1, -1, -1, -1,
-            false, loadOp.getSyncMode(), hasAtomicSim, false,
-            handwrittenOffsetState);
-        loadOp.setOperand(0, gm2lmOp.getResult());
-      }
+      auto gm2lmOp = builder.create<triton::xpu::GM2LMOp>(
+          loc, lmPtrType, loadOp.getPtr(), loadOp.getMask(), emptyBufPtr,
+          static_cast<int32_t>(OffsetState::Unknown), -1, -1, -1, -1, -1, false,
+          false, hasAtomicSim);
+      loadOp.setOperand(0, gm2lmOp.getResult());
     });
 
     m.walk([&](triton::xpu::StoreOp storeOp) {
       OpBuilder builder(storeOp);
       auto loc = storeOp.getLoc();
       auto storeVal = storeOp.getValue();
-      bool handwrittenOffsetState = offsetStateMap[storeOp] != -2;
-      int offsetState = handwrittenOffsetState
-                            ? offsetStateMap[storeOp]
-                            : static_cast<int32_t>(OffsetState::Unknown);
       if (xpuArch == 2) {
         if (storeVal.getDefiningOp()) {
           if (auto truncFOp =
@@ -606,30 +350,10 @@ struct TritonXPUCreateGM2LMPass
         }
       }
       storeOp->setOperand(1, storeVal);
-      if (this->isUseMaskZero) {
-        auto lm2gmOp = builder.create<triton::xpu::LM2GMMaskOp>(
-            loc, storeOp.getPtr(), storeVal, storeOp.getMask(), emptyLen,
-            emptyBufPtr, -1, offsetState, -1, -1, storeOp.getSyncMode(),
-            hasAtomicSim, handwrittenOffsetState);
-        lm2gmOp->moveAfter(storeOp);
-        // Remove Mask in storeOp
-        if (storeOp.getMask()) {
-          auto operandSegmentSizesAttr =
-              storeOp->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
-          SmallVector<int, 4> operandSegmentSizes(
-              operandSegmentSizesAttr.asArrayRef());
-          --operandSegmentSizes[2]; // 0: ptr, 1: value, 2: mask
-          storeOp->setAttr("operandSegmentSizes",
-                           builder.getDenseI32ArrayAttr(operandSegmentSizes));
-          storeOp->eraseOperands(2);
-        }
-      } else {
-        auto lm2gmOp = builder.create<triton::xpu::LM2GMOp>(
-            loc, storeOp.getPtr(), storeVal, storeOp.getMask(), emptyBufPtr, -1,
-            offsetState, -1, -1, storeOp.getSyncMode(), hasAtomicSim,
-            handwrittenOffsetState);
-        lm2gmOp->moveAfter(storeOp);
-      }
+      auto lm2gmOp = builder.create<triton::xpu::LM2GMOp>(
+          loc, storeOp.getPtr(), storeVal, storeOp.getMask(), emptyBufPtr,
+          static_cast<int32_t>(OffsetState::Unknown), -1, -1, -1, hasAtomicSim);
+      lm2gmOp->moveAfter(storeOp);
     });
 
     for (auto op : opToErase) {

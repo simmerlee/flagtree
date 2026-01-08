@@ -1,6 +1,0 @@
-#ifndef ILUVATAR_TRITON_DIALECT_TRITON_TRANSFORMS_RewriteTensorPointer_H_
-#define ILUVATAR_TRITON_DIALECT_TRITON_TRANSFORMS_RewriteTensorPointer_H_
-
-#define FLAGTREE_SPEC_Dialect_Triton_Transforms_RewriteTensorPointer_cpp
-
-#endif // ILUVATAR_TRITON_DIALECT_TRITON_TRANSFORMS_RewriteTensorPointer_H_

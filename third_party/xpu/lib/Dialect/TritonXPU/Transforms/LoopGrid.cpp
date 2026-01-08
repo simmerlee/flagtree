@@ -51,17 +51,17 @@ struct TritonXPULoopGrid
 
       func.setType(newFuncType);
 
+      // Add the corresponding arguments to function body
       auto &body = func.getBody().front();
       for (unsigned int i = 0; i < TRITON_PROGRAM_INFO_ARG_COUNT; i++) {
         body.addArgument(i32Ty, func.getLoc());
       }
 
-      // Filter operations based on the condition
+      // collect op that will be move to the loopGridFor
       SmallVector<Operation *> operations;
       for (auto &op : body.getOperations()) {
-        if (!isa<triton::ReturnOp>(op)) {
+        if (&op != body.getTerminator())
           operations.push_back(&op);
-        }
       }
 
       b.setInsertionPoint(&body, body.begin());
@@ -80,11 +80,9 @@ struct TritonXPULoopGrid
       auto upper = b.create<arith::IndexCastOp>(loc, idxTy, gridXYZ);
       auto step = b.create<arith::IndexCastOp>(loc, idxTy, numCluster);
       auto loopGrid = b.create<scf::ForOp>(loc, lower, upper, step);
-
       for (auto op : operations) {
         op->moveBefore(loopGrid.getBody()->getTerminator());
       }
-
       b.setInsertionPointToStart(loopGrid.getBody());
       Value index =
           b.create<arith::IndexCastOp>(loc, i32Ty, loopGrid.getInductionVar());
@@ -99,12 +97,6 @@ struct TritonXPULoopGrid
       });
       func.walk([&](triton::GetNumProgramsOp op) {
         op.replaceAllUsesWith(func.getArgument(argIdx + op.getAxisAsInt()));
-      });
-      func.walk([&](XPUPrintOp op) {
-        OpBuilder replacer(op);
-        Value outerIdx = replacer.create<arith::ExtSIOp>(
-            op.getLoc(), replacer.getI64Type(), index);
-        op->setOperand(3, outerIdx);
       });
     });
   }

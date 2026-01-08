@@ -1,9 +1,13 @@
+//===----------------------------------------------------------------------===//
+//
+// Copyright (C) 2025 by Kunlunxin. All rights reserved.
+//
+//===----------------------------------------------------------------------===//
 #ifndef TRITONXPU_ATTRDEFS
 #define TRITONXPU_ATTRDEFS
 
 include "mlir/IR/Interfaces.td" // AttrInterface
 include "mlir/IR/AttrTypeBase.td"
-include "triton/Dialect/Triton/IR/TritonAttrDefs.td"
 include "triton/Dialect/TritonXPU/IR/TritonXPUDialect.td"
 
 //===----------------------------------------------------------------------===//
@@ -80,7 +84,8 @@ def ClusterLayoutAttr : TritonXPU_Attr<"ClusterLayout", "cluster_layout"> {
     ArrayRefParameter<"unsigned">:$sizePerCore,
     ArrayRefParameter<"unsigned">:$coresPerGroup,
     ArrayRefParameter<"unsigned">:$groupsPerCluster,
-    ArrayRefParameter<"unsigned">:$order // the fastest-changing axis first
+    ArrayRefParameter<"unsigned">:$order, // the fastest-changing axis first
+    "bool":$isReduceOpt
   );
 
   let description = [{
@@ -182,7 +187,7 @@ core_32-core_63 will be idle
         sizePerCore[rank-1] = std::min(buffer_size, static_cast<unsigned>(
                         std::ceil(static_cast<float>(shape[rank-1]) / core_num)));
 
-        return $_get(context, sizePerCore, coresPerGroup, groupsPerCluster, order);
+        return $_get(context, sizePerCore, coresPerGroup, groupsPerCluster, order, /*isReduceOpt*/false);
     }]>,
   ];
 

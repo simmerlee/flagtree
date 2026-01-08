@@ -257,8 +257,8 @@ def compile(fn, **kwargs):
         src, target, options = adaptConfigToTorch_2_2(fn, **kwargs)
     else:
         src = fn
-        target = kwargs.get("target")
-        options = kwargs.get("options")
+        target = kwargs["target"]
+        options = kwargs["options"]
 
     if target is None:
         target = driver.active.get_current_target()

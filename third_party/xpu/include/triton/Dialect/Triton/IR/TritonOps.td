@@ -193,20 +193,6 @@ def TT_MulhiUIOp : TT_Op<"mulhiui", [Elementwise,
     let assemblyFormat = "$x `,` $y attr-dict `:` type($x)";
 }
 
-def TT_GeluOp : TT_Op<"gelu", [Elementwise,
-                                     SameOperandsAndResultShape,
-                                     SameOperandsAndResultEncoding,
-                                     Pure,
-                                     /*DeclareOpInterfaceMethods<CastOpInterface>*/]> {
-    let summary = "Gelu Act";
-
-    let arguments = (ins TT_Type:$src);
-
-    let results = (outs TT_Type:$result);
-
-    let assemblyFormat = "$src attr-dict `:` type($src) `->` type($result)";
-}
-
 //
 // Pointer Arith Ops
 //
@@ -264,9 +250,7 @@ def TT_LoadOp : TT_Op<"load", [
       OptionalAttr<TT_PaddingOptionAttr>:$padding,
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
       DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict,
-      DefaultValuedAttr<BoolAttr, "false">:$isVolatile,
-      DefaultValuedAttr<TT_OffsetStatePolicyAttr, "::mlir::triton::OffsetStatePolicy::UNKNOWN">:$offsetState, // TritonXPU
-      DefaultValuedAttr<TT_SyncAttr, "::mlir::triton::MemorySyncMode::SYNC">:$syncMode // TritonXPU
+      DefaultValuedAttr<BoolAttr, "false">:$isVolatile
     );
 
     let results = (outs TT_Type:$result);
@@ -289,50 +273,7 @@ def TT_LoadOp : TT_Op<"load", [
         OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
                        "ArrayRef<int32_t>":$boundaryCheck,
                        "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>,
-
-        // A tensor of pointers or a pointer to a scalar
-        OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState)>,
-        // A tensor pointer with boundary check and padding
-        OpBuilder<(ins "Value":$ptr, "ArrayRef<int32_t>":$boundaryCheck,
-                       "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState)>,
-        // A tensor of pointers or a pointer to a scalar with mask
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState)>,
-        // A tensor of pointers or a pointer to a scalar with mask and other
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState)>,
-        // A utility function to build the operation with all attributes
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
-                       "ArrayRef<int32_t>":$boundaryCheck,
-                       "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState)>,
-
-        // A tensor of pointers or a pointer to a scalar
-        OpBuilder<(ins "Value":$ptr, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState,
-                       "triton::MemorySyncMode":$syncMode)>,
-        // A tensor pointer with boundary check and padding
-        OpBuilder<(ins "Value":$ptr, "ArrayRef<int32_t>":$boundaryCheck,
-                       "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState,
-                       "triton::MemorySyncMode":$syncMode)>,
-        // A tensor of pointers or a pointer to a scalar with mask
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState,
-                       "triton::MemorySyncMode":$syncMode)>,
-        // A tensor of pointers or a pointer to a scalar with mask and other
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState,
-                       "triton::MemorySyncMode":$syncMode)>,
-        // A utility function to build the operation with all attributes
-        OpBuilder<(ins "Value":$ptr, "Value":$mask, "Value":$other,
-                       "ArrayRef<int32_t>":$boundaryCheck,
-                       "std::optional<triton::PaddingOption>":$padding, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "bool":$isVolatile, "triton::OffsetStatePolicy":$offsetState,
-                       "triton::MemorySyncMode":$syncMode)>
+                       "triton::EvictionPolicy":$evict, "bool":$isVolatile)>
     ];
 
     // Specify `cacheModifier` and `evictionPolicy` explicitly in the
@@ -352,9 +293,7 @@ def TT_LoadOp : TT_Op<"load", [
       $ptr (`,` $mask^)? (`,` $other^)?
       oilist(
         `cacheModifier` `=` $cache |
-        `evictionPolicy` `=` $evict |
-        `offsetStatePolicy` `=` $offsetState |
-        `memorySyncMode` `=` $syncMode
+        `evictionPolicy` `=` $evict
       )
       attr-dict `:` type($ptr)
     }];
@@ -381,9 +320,7 @@ def TT_StoreOp : TT_Op<"store", [
       Optional<TT_BoolLike>:$mask,
       DefaultValuedAttr<DenseI32ArrayAttr, "::llvm::ArrayRef<int32_t>{}">:$boundaryCheck,
       DefaultValuedAttr<TT_CacheModifierAttr, "triton::CacheModifier::NONE">:$cache,
-      DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict,
-      DefaultValuedAttr<TT_OffsetStatePolicyAttr, "triton::OffsetStatePolicy::UNKNOWN">:$offsetState, // TritonXPU
-      DefaultValuedAttr<TT_SyncAttr, "triton::MemorySyncMode::SYNC">:$syncMode // TritonXPU
+      DefaultValuedAttr<TT_EvictionPolicyAttr, "triton::EvictionPolicy::NORMAL">:$evict
     );
 
     let builders = [
@@ -394,25 +331,7 @@ def TT_StoreOp : TT_Op<"store", [
                        "triton::EvictionPolicy":$evict)>,
         // A tensor pointer with boundary check
         OpBuilder<(ins "Value":$ptr, "Value":$value, "ArrayRef<int32_t>":$boundaryCheck, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict)>,
-
-        // A tensor of pointers or a pointer to a scalar
-        OpBuilder<(ins "Value":$ptr, "Value":$value, "triton::CacheModifier":$cache, "triton::EvictionPolicy":$evict, "triton::OffsetStatePolicy":$offsetState)>,
-        // A tensor of pointers or a pointer to a scalar with mask
-        OpBuilder<(ins "Value":$ptr, "Value":$value, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "triton::OffsetStatePolicy":$offsetState)>,
-        // A tensor pointer with boundary check
-        OpBuilder<(ins "Value":$ptr, "Value":$value, "ArrayRef<int32_t>":$boundaryCheck, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "triton::OffsetStatePolicy":$offsetState)>,
-
-        // A tensor of pointers or a pointer to a scalar
-        OpBuilder<(ins "Value":$ptr, "Value":$value, "triton::CacheModifier":$cache, "triton::EvictionPolicy":$evict, "triton::OffsetStatePolicy":$offsetState, "triton::MemorySyncMode":$syncMode)>,
-        // A tensor of pointers or a pointer to a scalar with mask
-        OpBuilder<(ins "Value":$ptr, "Value":$value, "Value":$mask, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "triton::OffsetStatePolicy":$offsetState, "triton::MemorySyncMode":$syncMode)>,
-        // A tensor pointer with boundary check
-        OpBuilder<(ins "Value":$ptr, "Value":$value, "ArrayRef<int32_t>":$boundaryCheck, "triton::CacheModifier":$cache,
-                       "triton::EvictionPolicy":$evict, "triton::OffsetStatePolicy":$offsetState, "triton::MemorySyncMode":$syncMode)>
+                       "triton::EvictionPolicy":$evict)>
     ];
 
     // Specify cacheModifier and evictionPolicy explicitly, instead of leaving
@@ -423,7 +342,7 @@ def TT_StoreOp : TT_Op<"store", [
     // due to limitations in MLIR's asm parser.
     let assemblyFormat = [{
       $ptr `,` $value (`,` $mask^)?
-      oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict | `offsetStatePolicy` `=` $offsetState | `memorySyncMode` `=` $syncMode)
+      oilist(`cacheModifier` `=` $cache | `evictionPolicy` `=` $evict)
       attr-dict `:` type($ptr)
     }];
 

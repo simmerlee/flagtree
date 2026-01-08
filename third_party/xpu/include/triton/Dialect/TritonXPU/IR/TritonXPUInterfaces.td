@@ -11,6 +11,6 @@ include "mlir/Interfaces/SideEffectInterfaces.td" // MemoryEffects
 include "mlir/Interfaces/InferTypeOpInterface.td" // SameOperandsAndResultType
 include "mlir/Interfaces/ControlFlowInterfaces.td" // ReturnLike
 
-include "triton/Dialect/Triton/IR/TritonInterfaces.td" // SameOperandsEncoding, SameOperandsAndResultEncoding
+def SameOperandsEncoding : NativeOpTrait<"SameOperandsEncoding">;
 
 #endif // TRITONXPU_INTERFACES

@@ -4,11 +4,8 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "triton/Conversion/MLIRTypes.h"
+#include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Dialect/TritonGPU/IR/Types.h"
-
-#if __has_include("flagtree_spec.h")
-#include "flagtree_spec.h"
-#endif
 
 using namespace mlir;
 using namespace mlir::triton;
@@ -17,14 +14,26 @@ class TritonGPUToLLVMTypeConverter : public LLVMTypeConverter {
 public:
   using TypeConverter::convertType;
 
-  TritonGPUToLLVMTypeConverter(MLIRContext *ctx, LowerToLLVMOptions &option,
+  TritonGPUToLLVMTypeConverter(MLIRContext *ctx,
+                               const LowerToLLVMOptions &option,
+                               const TargetInfoBase &targetInfo,
+                               const DataLayoutAnalysis *analysis = nullptr);
+  TritonGPUToLLVMTypeConverter(MLIRContext *ctx,
+                               const TargetInfoBase &targetInfo,
                                const DataLayoutAnalysis *analysis = nullptr);
 
-  Type getElementTypeForStruct(TensorOrMemDesc type);
-  Type convertTritonPointerType(triton::PointerType type);
-  Type convertTritonTensorType(RankedTensorType type);
-  Type convertMemDescType(MemDescType type);
-  Type convertAsyncToken(triton::gpu::AsyncTokenType type);
+  Type convertTritonTensorType(RankedTensorType type,
+                               const TargetInfoBase &targetInfo);
+  Type convertMemDescType(triton::gpu::MemDescType type,
+                          const TargetInfoBase &targetInfo);
+  Type convertAsyncTokenType(triton::gpu::AsyncTokenType type);
+
+  template <typename... T> void convertFP8Type() {
+    (addConversion([&](T type) -> std::optional<Type> {
+       return IntegerType::get(type.getContext(), 8);
+     }),
+     ...);
+  }
 };
 
 #endif

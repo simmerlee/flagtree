@@ -9,25 +9,27 @@ endif()
 get_flagtree_backend_lib("TritonGPUToLLVM" _EXTRA_LINK_LIBS)
 
 add_triton_library(TritonGPUToLLVM
-    ConvertLayoutOpToLLVM/SharedToDotOperandFMA.cpp
     DotOpToLLVM/FMA.cpp
-    TypeConverter.cpp
-    Utility.cpp
-    ElementwiseOpToLLVM.cpp
-    MemoryOpToLLVM.cpp
-    AssertOpToLLVM.cpp
-    ViewOpToLLVM.cpp
-    MakeRangeOpToLLVM.cpp
-    HistogramOpToLLVM.cpp
+    DotOpToLLVM/FMADotUtility.cpp
     AllocateSharedMemory.cpp
+    AllocateWarpGroups.cpp
+    AssertOpToLLVM.cpp
+    ControlFlowOpToLLVM.cpp
+    ConvertLayoutOpToLLVM.cpp
+    ElementwiseOpToLLVM.cpp
+    FuncOpToLLVM.cpp
+    GatherOpToLLVM.cpp
+    GlobalScratchMemoryAllocation.cpp
+    HistogramOpToLLVM.cpp
+    MakeRangeOpToLLVM.cpp
+    MemoryOpToLLVM.cpp
+    PrintOpToLLVM.cpp
     ReduceOpToLLVM.cpp
     ScanOpToLLVM.cpp
-    ConvertLayoutOpToLLVM.cpp
-    ControlFlowOpToLLVM.cpp
-    FuncOpToLLVM.cpp
     SPMDOpToLLVM.cpp
-    DecomposeUnsupportedConversions.cpp
-    PrintOpToLLVM.cpp
+    TypeConverter.cpp
+    Utility.cpp
+    ViewOpToLLVM.cpp
 
     DEPENDS
     TritonGPUConversionPassIncGen
@@ -43,7 +45,5 @@ add_triton_library(TritonGPUToLLVM
     TritonIR
     TritonGPUIR
     TritonGPUTransforms
-    ${NVGPUTransforms}
-    ${NVGPUIR}
-    ${_EXTRA_LINK_LIBS}
+    TritonNvidiaGPUTransforms
 )

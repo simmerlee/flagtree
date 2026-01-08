@@ -1,3 +1,0 @@
-add_subdirectory(TritonHCUTransforms)
-add_subdirectory(triton)
-add_subdirectory(TritonHCUGPUToLLVM)

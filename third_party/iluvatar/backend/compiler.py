@@ -3,7 +3,8 @@ from triton._C.libtriton import ir, passes, llvm, iluvatar
 
 from dataclasses import dataclass
 import functools
-from typing import Any, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
+from types import ModuleType
 import hashlib
 import re
 import tempfile
@@ -39,7 +40,8 @@ class CUDAOptions:
     debug: bool = False
     backend_name: str = 'cuda'
     use_sme: int = 0
-    hash_corex: str = ''
+    enable_sme: bool = True
+    num_vgpr: int = 0
 
     def __post_init__(self):
         default_libdir = cuda_home_dirs() + "/nvvm/libdevice/"
@@ -93,6 +95,10 @@ class CUDABackend(BaseBackend):
         codegen_fns = dict()
         return codegen_fns
 
+    # TODO: implement
+    def get_module_map(self) -> Dict[str, ModuleType]:
+        return {}
+
     def load_dialects(self, ctx):
         iluvatar.load_dialects(ctx)
 
@@ -116,7 +122,7 @@ class CUDABackend(BaseBackend):
         # TTIR -> TTGIR
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 64, opt.num_ctas, opt.num_stages)
+        passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 64, opt.num_ctas)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         passes.ttgpuir.add_remove_layout_conversions(pm)
@@ -133,7 +139,6 @@ class CUDABackend(BaseBackend):
         passes.ttgpuir.add_prefetch(pm)
         passes.ttgpuir.add_optimize_dot_operands(pm, True)
         passes.ttgpuir.add_remove_layout_conversions(pm)
-        iluvatar.passes.ttgpuir.add_matmul_mmaload(pm, capability)
         iluvatar.passes.ttgpuir.add_matmul_mmastore(pm, capability)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         iluvatar.passes.ttgpuir.add_mmareduce(pm, capability)
@@ -185,8 +190,8 @@ class CUDABackend(BaseBackend):
         fns = [fn for fn in llvm_mod.get_functions() if not fn.is_declaration()]
         # The public kernel should be kernel 0.
         fns[0].set_calling_conv(iluvatar.CALLING_CONV_ILUVATAR_KERNEL)
-        if options.maxnreg and options.maxnreg > 0:
-            fns[0].add_fn_attr("iluvatar-num-vgpr", f"{options.maxnreg}")
+        if (options.num_vgpr > 0):
+            fns[0].add_fn_attr("iluvatar-num-vgpr", f"{options.num_vgpr}")
 
         if options.extern_libs:
             paths = [path for (name, path) in options.extern_libs]

@@ -22,7 +22,7 @@ struct XPUReduceOpConversion
 
   inline SmallVector<SmallVector<Value>>
   emitIndices(Location loc, RewriterBase &rewriter,
-              const xpu::TargetInfo &target, Attribute layout,
+              const TargetInfoBase &target, Attribute layout,
               RankedTensorType type, const Value &loopIdx) const {
     SmallVector<int64_t> shape(type.getShape());
 
@@ -153,9 +153,8 @@ struct XPUReduceOpConversion
     auto srcValues = unpackInputs(loc, op, adaptor, rewriter);
 
     // Init shared memory for mask.
-    if (!targetInfo.getXPUIsUseMaskZero() && !helper.isCoreSynchronous()) {
-      initSharedMemory(helper, rewriter, loc);
-    }
+    initSharedMemory(helper, rewriter, loc);
+
     std::map<SmallVector<unsigned>, SmallVector<Value>> accs;
     std::map<SmallVector<unsigned>, SmallVector<Value>> indices;
     // First reduce all the values along axis within each thread.
@@ -180,7 +179,7 @@ struct XPUReduceOpConversion
   }
 
 private:
-  const xpu::TargetInfo &targetInfo;
+  const TargetInfoBase &targetInfo;
 
   inline bool isNeedLoopCacheResult(triton::xpu::ReduceOp op) const {
     if (op.getAxis() == 1) {
@@ -542,35 +541,6 @@ private:
     rewriter.eraseOp(returnOp);
   }
 
-  LLVM::FCmpPredicate
-  ArithCmpFPredicateToLLVM(arith::CmpFPredicate predicate) const {
-    switch (predicate) {
-#define __PRED_ENUM(item__, item1__)                                           \
-  case arith::CmpFPredicate::item__:                                           \
-    return LLVM::FCmpPredicate::item1__
-
-      __PRED_ENUM(OEQ, oeq);
-      __PRED_ENUM(ONE, one);
-      __PRED_ENUM(OGT, ogt);
-      __PRED_ENUM(OGE, oge);
-      __PRED_ENUM(OLT, olt);
-      __PRED_ENUM(OLE, ole);
-      __PRED_ENUM(ORD, ord);
-      __PRED_ENUM(UEQ, ueq);
-      __PRED_ENUM(UGT, ugt);
-      __PRED_ENUM(UGE, uge);
-      __PRED_ENUM(ULT, ult);
-      __PRED_ENUM(ULE, ule);
-      __PRED_ENUM(UNE, une);
-      __PRED_ENUM(UNO, uno);
-      __PRED_ENUM(AlwaysTrue, _true);
-      __PRED_ENUM(AlwaysFalse, _false);
-
-#undef __PRED_ENUM
-    }
-    llvm_unreachable("Unknown arith::CmpFPredicate");
-  }
-
   void calculate(ConversionPatternRewriter &rewriter, const Location &loc,
                  Operation *op, Value &acc, const Value &cur) const {
     TypeSwitch<Operation *>(op)
@@ -581,11 +551,6 @@ private:
         .Case<arith::OrIOp>([&](auto oriOp) { acc = or_(acc, cur); })
         .Case<arith::XOrIOp>([&](auto xoriOp) { acc = xor_(acc, cur); })
         .Case<arith::AndIOp>([&](auto andOp) { acc = and_(acc, cur); })
-        .Case<arith::CmpFOp>([&](auto cmpfOp) {
-          acc = rewriter.create<LLVM::FCmpOp>(
-              loc, acc.getType(),
-              ArithCmpFPredicateToLLVM(cmpfOp.getPredicate()), acc, cur);
-        })
         .Default([&](auto defaultOp) {
           LLVM_DEBUG(defaultOp->dump());
           llvm_unreachable("[Vectorization]: Unsupported Operation Type "
@@ -648,29 +613,15 @@ private:
     triton::xpu::ReduceOp op = helper.getXPUOperation();
     RankedTensorType operandType = op.getInputTypes()[0];
     // Assumes offsets don't actually depend on type
-    SmallVector<SmallVector<unsigned>> _offsets =
+    SmallVector<SmallVector<unsigned>> offsets =
         emitOffsetForLayout(helper.getSrcLayout(), operandType);
 
     // Thread X might hold the same input value in two registers.  Get the
     // indices in `offsets` that hold unique values, and only accumualte over
     // those.
-    SmallVector<SmallVector<unsigned>> offsets(_offsets);
-    auto shape = operandType.getShape();
-    auto layout =
-        cast<triton::xpu::ClusterLayoutAttr>(operandType.getEncoding());
-    unsigned rowsPerCore = layout.getSizePerCore()[0];
-    bool coreDealMultiRows = (shape.size() == 2 && rowsPerCore > 1);
-    if (coreDealMultiRows) {
-      // Col major to row major
-      unsigned col = shape[1];
-      unsigned row = offsets.size() / col;
-      assert(offsets.size() % col == 0 &&
-             "Offsets size is not equal to col mul row");
-      for (int i = 0; i < row; ++i) {
-        for (int j = 0; j < col; ++j) {
-          offsets[i * col + j] = _offsets[j * row + i];
-        }
-      }
+    llvm::MapVector<ArrayRef<unsigned>, int> uniqueOffsets;
+    for (int i = 0; i < offsets.size(); ++i) {
+      uniqueOffsets.insert({offsets[i], i});
     }
 
     unsigned srcElems = getTotalElemsPerThread(operandType);
@@ -680,7 +631,7 @@ private:
                     operandType, op.getLoopIndex());
 
     // reduce within threads
-    for (int i = 0; i < offsets.size(); ++i) {
+    for (const auto &[_, i] : uniqueOffsets) {
       SmallVector<unsigned> key = offsets[i];
       key[op.getAxis()] = 0;
       bool isFirst = accs.find(key) == accs.end();
@@ -723,20 +674,6 @@ private:
         Value writePtr =
             gep(ptr_ty(rewriter.getContext(), 2), elemTy, smemBases[i], coreId);
         store_sm(acc[i], writePtr);
-
-        // Dump smem[i][0-63] Data Which Will Be Accmulated By Core0
-        if (false) { // modify true to enable dump
-          for (int core_id_offset = 0; core_id_offset < 64; ++core_id_offset) {
-            Value loadPtr = gep(ptr_ty(rewriter.getContext(), 2), elemTy,
-                                smemBases[i], i32_val(core_id_offset));
-            Value loadVal = load_sm(elemTy, loadPtr);
-            std::string calFunc = "_ZN3xpu10printFloatEfi";
-            ValueRange operandValueRange(
-                {loadVal, i32_val(i * 100 + core_id_offset)});
-            mlir::LLVM::XPU::createDeviceCall(calFunc, rewriter, op,
-                                              operandValueRange, loc);
-          }
-        }
       }
     }
   }
@@ -822,11 +759,11 @@ private:
     SmallVector<SmallVector<Value>> readValues(groupSizeInt);
     for (unsigned i = 0; i < operandNum; ++i) { // skip loopIndex
       auto elemTy = getElementType(op, i);
-      Value groupBasePtr = gep(ptr_ty(rewriter.getContext(), 2), elemTy,
-                               smemBases[i], groupSkip);
+
       for (unsigned readOffset = 0; readOffset < groupSizeInt; ++readOffset) {
-        Value readPtr = gep(ptr_ty(rewriter.getContext(), 2), elemTy,
-                            groupBasePtr, i32_val(readOffset));
+        Value laneId = add(groupSkip, i32_val(readOffset));
+        Value readPtr =
+            gep(ptr_ty(rewriter.getContext(), 2), elemTy, smemBases[i], laneId);
         readValues[readOffset].push_back(load_sm(elemTy, readPtr));
       }
     }

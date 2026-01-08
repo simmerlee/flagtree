@@ -5,7 +5,6 @@ add_triton_library(TritonXPUTransforms
   DtypeConvert.cpp
   Legalize.cpp
   LoopGrid.cpp
-  LowerPrint.cpp
   Mask.cpp
   OffsetAnalysis.cpp
   Vectorize.cpp
@@ -14,9 +13,6 @@ add_triton_library(TritonXPUTransforms
   Interleave.cpp
   StoreControl.cpp
   OtherSim.cpp
-  MemoryCache.cpp
-  MemoryInplace.cpp
-  CFToSCF.cpp
 
   DEPENDS
   TritonXPUTransformsIncGen

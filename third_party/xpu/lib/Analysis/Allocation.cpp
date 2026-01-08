@@ -253,11 +253,6 @@ private:
       unsigned bytes = helper.getXPUScratchSizeInBytes();
       maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
                                                           scratchAlignment);
-    } else if (auto xpuScanOp = dyn_cast<triton::xpu::ScanOp>(op)) {
-      ScanLoweringHelper helper(xpuScanOp);
-      unsigned bytes = 128 * 4;
-      maybeAddScratchBuffer<BufferT::BufferKind::Scratch>(op, bytes,
-                                                          scratchAlignment);
     } else if (auto reduceOp = dyn_cast<triton::ReduceOp>(op)) {
       ReduceOpHelper helper(reduceOp);
       unsigned bytes = helper.getScratchSizeInBytes();

@@ -391,16 +391,9 @@ class CudaLauncher(object):
 class CudaDriver(GPUDriver):
 
     def __init__(self):
-        # self.utils = CudaUtils()  # TODO: make static
+        self.utils = CudaUtils()  # TODO: make static
         self.launcher_cls = CudaLauncher
-        # flagtree backend specialization
-        from triton.backends.iluvatar import spec
-        self.spec = spec
         super().__init__()
-
-    @property
-    def utils(self):
-        return CudaUtils()
 
     def get_current_target(self):
         device = self.get_current_device()
@@ -416,3 +409,11 @@ class CudaDriver(GPUDriver):
     def is_active():
         import torch
         return torch.cuda.is_available() and (torch.version.hip is None)
+
+    # TODO: implement
+    def get_active_torch_device(self):
+        return "iluvatar"
+
+    def get_benchmarker(self):
+        from triton.testing import do_bench
+        return do_bench

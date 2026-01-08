@@ -636,11 +636,7 @@ class JITFunction(KernelInterface[T]):
             # Kernel is not cached; we have to compile.
             target = driver.active.get_current_target()
             backend = self.make_backend(target)
-            if backend.binary_ext == 'xpubin':
-                kwargs['grid'] = grid
-                options = backend.parse_options(kwargs)
-            else:
-                options = backend.parse_options(kwargs)
+            options = backend.parse_options(kwargs)
 
             # deprecated arguments
             assert "device_type" not in kwargs, "device_type option is deprecated; current target will be used"
